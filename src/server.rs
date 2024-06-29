@@ -1,8 +1,7 @@
 use escpos::{driver::UsbDriver};
-use warp::{http::Method, http::StatusCode, Filter};
-use serde_json::json;
+use warp::{http::Method, http::StatusCode, Filter, reply::json};
 
-use crate::{models::PrinterTestSchema, print::handle_test_print};
+use crate::{models::{PrinterTestSchema, StatusResponse}, print::{handle_test_print, is_device_connected}};
 
 pub async fn run( driver: UsbDriver) {
     let routes = routes(driver);
@@ -12,7 +11,13 @@ pub async fn run( driver: UsbDriver) {
 }
 
 pub fn routes( driver: UsbDriver) -> impl Filter<Extract =  impl warp::Reply, Error = warp::Rejection> + Clone {
-    hello_route().or(print_route(driver))
+    print_route(driver)
+}
+
+fn with_driver(
+    driver: UsbDriver,
+) -> impl Filter<Extract = (UsbDriver,), Error = std::convert::Infallible> + Clone {
+    warp::any().map(move || driver.clone())
 }
 
 fn cors() -> warp::cors::Cors {
@@ -28,13 +33,12 @@ fn cors() -> warp::cors::Cors {
         .build()
 }
 
-
-fn hello_route() -> impl Filter<Extract = impl warp::Reply, Error = warp::Rejection> + Clone {
-    warp::path::end().map(|| warp::reply::json(&json!("Hello Word!")))
+pub fn print_route( driver: UsbDriver) -> impl Filter<Extract =  impl warp::Reply, Error = warp::Rejection> + Clone {
+    warp::path!("print" / "test").and(test(driver.clone()).or(status(driver))).with(cors())
 }
 
-fn print_route(driver: UsbDriver) -> impl Filter<Extract = impl warp::Reply, Error = warp::Rejection> + Clone {
-    warp::path!("print" / "test")
+fn test(driver: UsbDriver) -> impl Filter<Extract = impl warp::Reply, Error = warp::Rejection> + Clone {
+    warp::path::end()
         .and(warp::post())
         .and(with_driver(driver.clone()))
         .and(warp::body::json::<PrinterTestSchema>())
@@ -43,11 +47,38 @@ fn print_route(driver: UsbDriver) -> impl Filter<Extract = impl warp::Reply, Err
                 Ok(_) => Ok::<_, warp::Rejection>(warp::reply::with_status("Printed successfully", StatusCode::OK)),
                 Err(_) => Err(warp::reject::reject()),
             }
-        }).with(cors())
+        })
 }
 
-fn with_driver(
-    driver: UsbDriver,
-) -> impl Filter<Extract = (UsbDriver,), Error = std::convert::Infallible> + Clone {
-    warp::any().map(move || driver.clone())
+fn status(driver: UsbDriver) -> impl Filter<Extract = impl warp::Reply, Error = warp::Rejection> + Clone {
+    warp::path::end()
+        .and(warp::get())
+        .and(with_driver(driver.clone()))
+        .and_then(|driver: UsbDriver| async move {
+            status_handler(driver).await
+        })
+        .boxed()
+}
+
+async fn status_handler(driver: UsbDriver) -> Result<impl warp::Reply, warp::Rejection> {
+    let is_connected = is_device_connected(driver).await;
+    if is_connected {
+        println!("Connected sent!");
+        Ok(warp::reply::with_status(
+            json(&StatusResponse {
+                is_connected,
+                error: "Printer is connected".to_string(),
+            }),
+            StatusCode::OK,
+        ))
+    } else {
+        println!("Not connected sent!");
+        Ok(warp::reply::with_status(
+            json(&StatusResponse {
+                is_connected,
+                error: "The thermal printer is either not plugged in, or is in a not ready state.".to_string(),
+            }),
+            StatusCode::OK,
+        ))
+    }
 }

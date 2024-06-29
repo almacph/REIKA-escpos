@@ -3,7 +3,6 @@ use std::time::Duration;
 use escpos::errors::PrinterError;
 use escpos::{driver::UsbDriver, printer::Printer, utils::*};
 use tokio::time::sleep;
-use escpos::driver::Driver;
 
 use crate::models::PrinterTestSchema;
 
@@ -36,6 +35,33 @@ where
         let fut = f(driver.clone());
         match fut.await {
             Ok(result) => return Ok(result),
+            Err(_) => {
+                reconnect_device(&mut driver).await;
+            }
+        }
+    }
+}
+
+async fn initial_attempt<F, Fut>(driver: UsbDriver, f: F) -> bool
+where
+    F: Fn(UsbDriver) -> Fut,
+    Fut: Future<Output = Result<(), PrinterError>>,
+{
+    match f(driver).await {
+        Ok(_) => true,
+        Err(_) => false,
+    }
+}
+
+async fn retry_attempt<F, Fut>(mut driver: UsbDriver, f: F) -> bool
+where
+    F: Fn(UsbDriver) -> Fut,
+    Fut: Future<Output = Result<(), PrinterError>>,
+{
+    loop {
+        let fut = f(driver.clone());
+        match fut.await {
+            Ok(_) => return true,
             Err(_) => {
                 reconnect_device(&mut driver).await;
             }
@@ -80,22 +106,22 @@ pub async fn handle_test_print(
     }).await
 }
 
-pub async fn get_printer_status(driver: UsbDriver) -> Result<(), PrinterError> {
-    ensure_driver(driver, move |d| async move {
-        Printer::new(d.clone(), Protocol::default(), None)
-            .debug_mode(Some(DebugMode::Dec))
-            .real_time_status(RealTimeStatusRequest::Printer)?
-            .real_time_status(RealTimeStatusRequest::RollPaperSensor)?
-            .send_status()?;
-
-        let mut buf = [0; 1];
-        d.read(&mut buf)?;
-
-        let status = RealTimeStatusResponse::parse(RealTimeStatusRequest::Printer, buf[0])?;
-        println!(
-            "Printer online: {}",
-            status.get(&RealTimeStatusResponse::Online).unwrap_or(&false)
-        );
+pub async fn is_device_connected(driver: UsbDriver) -> bool {
+    if !initial_attempt(driver.clone(), |d| async move {
+        let mut printer = Printer::new(d.clone(), Protocol::default(), None);
+        printer.init()?;
+        printer.smoothing(true)?;
+        printer.print_cut()?;
         Ok(())
-    }).await
+    }).await {
+        retry_attempt(driver, |d| async move {
+            let mut printer = Printer::new(d.clone(), Protocol::default(), None);
+            printer.init()?;
+            printer.smoothing(true)?;
+            printer.print_cut()?;
+            Ok(())
+        }).await
+    } else {
+        true
+    }
 }

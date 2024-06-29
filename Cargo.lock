@@ -217,8 +217,7 @@ checksum = "5443807d6dff69373d433ab9ef5378ad8df50ca6298caf15de6e52e24aaf54d5"
 [[package]]
 name = "escpos"
 version = "0.12.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d61072257bf7231b08a87c29e904ccdc1e7e140b3af19b865ba98aaa19eeaa48"
+source = "git+https://github.com/SporadicToast/escpos-rs.git?branch=arc-mutex-usbdrivers#cd555876793d0cebfef23ce74f31a1e45dfc7f5d"
 dependencies = [
  "encoding_rs",
  "lazy_static",

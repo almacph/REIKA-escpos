@@ -14,6 +14,12 @@ impl PrinterTestSchema {
         &self.test_page
     }
 }
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct StatusResponse {
+    pub is_connected: bool,
+    pub error: String,
+}
 // export const printerStatusSchema = z.object({
 //     is_connected: z.boolean(),
 //     error: z.string().optional()
