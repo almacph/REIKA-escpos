@@ -93,7 +93,7 @@ pub async fn handle_test_print(
                         Command::Underline(UnderlineMode::None),
                         Command::Size((2, 3)),
                         Command::Writeln("Hello world - Normal".to_string()),
-                        Command::PrintCut(vec![]),
+                        Command::PrintCut(None),
                     ],
                 };
                 execute_commands(d.clone(), test_commands).await?;
@@ -101,7 +101,7 @@ pub async fn handle_test_print(
 
             if !print_request.test_line().is_empty() {
                 let line_commands = Commands {
-                    commands: vec![Command::Writeln(print_request.test_line().to_string()), Command::PrintCut(vec![])],
+                    commands: vec![Command::Writeln(print_request.test_line().to_string()), Command::PrintCut(None)],
                 };
                 execute_commands(d, line_commands).await?;
             }
