@@ -4,7 +4,7 @@ use escpos::errors::PrinterError;
 use escpos::{driver::UsbDriver, printer::Printer, utils::*};
 use tokio::time::sleep;
 
-use crate::models::PrinterTestSchema;
+use crate::models::{execute_commands, parse_json, Command, Commands, PrinterTestSchema};
 
 pub async fn initialize_device() -> UsbDriver {
     loop {
@@ -76,34 +76,49 @@ pub async fn handle_test_print(
     ensure_driver(driver, move |d| {
         let print_request = print_request.clone();
         async move {
-            let mut binding = Printer::new(d.clone(), Protocol::default(), None);
-            let printer = binding.init()?;
-
             if *print_request.test_page() {
-                printer
-                    .smoothing(true)?
-                    .bold(true)?
-                    .underline(UnderlineMode::Single)?
-                    .writeln("Bold underline")?
-                    .justify(JustifyMode::CENTER)?
-                    .reverse(true)?
-                    .bold(false)?
-                    .writeln("Hello world - Reverse")?
-                    .feed()?
-                    .justify(JustifyMode::RIGHT)?
-                    .reverse(false)?
-                    .underline(UnderlineMode::None)?
-                    .size(2, 3)?
-                    .writeln("Hello world - Normal")?
-                    .print_cut()?;
+                let test_commands = Commands {
+                    commands: vec![
+                        Command::Smoothing(true),
+                        Command::Bold(true),
+                        Command::Underline(UnderlineMode::Single),
+                        Command::Writeln("Bold underline".to_string()),
+                        Command::Justify(JustifyMode::CENTER),
+                        Command::Reverse(true),
+                        Command::Bold(false),
+                        Command::Writeln("Hello world - Reverse".to_string()),
+                        Command::Feed(true),
+                        Command::Justify(JustifyMode::RIGHT),
+                        Command::Reverse(false),
+                        Command::Underline(UnderlineMode::None),
+                        Command::Size((2, 3)),
+                        Command::Writeln("Hello world - Normal".to_string()),
+                        Command::PrintCut(vec![]),
+                    ],
+                };
+                execute_commands(d.clone(), test_commands).await?;
             }
 
             if !print_request.test_line().is_empty() {
-                printer.writeln(&print_request.test_line())?.print_cut()?;
+                let line_commands = Commands {
+                    commands: vec![Command::Writeln(print_request.test_line().to_string()), Command::PrintCut(vec![])],
+                };
+                execute_commands(d, line_commands).await?;
             }
             Ok(())
         }
     }).await
+}
+
+pub async fn print_receipt(driver: UsbDriver, json_commands: &str) -> Result<(), PrinterError> {
+    ensure_driver(driver, move |d| {
+        let json_commands = json_commands.to_string();
+        async move {
+            let commands = parse_json(&json_commands)?;
+            execute_commands(d, commands).await?;
+            Ok(())
+        }
+    }).await.map_err(|e| PrinterError::Io(e.to_string())) // Manually convert to PrinterError here
 }
 
 pub async fn is_device_connected(driver: UsbDriver) -> bool {
