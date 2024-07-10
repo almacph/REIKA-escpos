@@ -73,7 +73,7 @@ pub struct Commands {
 }
 
 pub fn parse_json(json_data: &str) -> Result<Commands, PrinterError> {
-    println!("Parsing a print request!");
+    println!("Parsing a print request! {:#?}", json_data);
     let commands: Commands = serde_json::from_str(json_data).map_err(|e| PrinterError::Input(e.to_string()))?;
     println!("{:?}", commands);
     Ok(commands)

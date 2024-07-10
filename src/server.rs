@@ -3,7 +3,7 @@ use std::convert::Infallible;
 use escpos::{driver::UsbDriver, errors::PrinterError};
 use warp::{http::Method, http::StatusCode, Filter, reply::json};
 
-use crate::{models::{PrinterTestSchema, StatusResponse}, print::{handle_test_print, is_device_connected, print_receipt}};
+use crate::{models::{parse_json, PrinterTestSchema, StatusResponse}, print::{handle_test_print, is_device_connected, print_receipt}};
 
 pub async fn run( driver: UsbDriver) {
     let routes = routes(driver);
@@ -55,24 +55,46 @@ fn print(driver: UsbDriver) -> impl Filter<Extract = impl warp::Reply, Error = w
 
 
 async fn handle_request(driver: UsbDriver, json_body: serde_json::Value) -> Result<impl warp::Reply, Infallible> {
-    println!("handle_request");
     let json_string = serde_json::to_string(&json_body).unwrap();
     match print_middleman(driver, &json_string).await {
         Ok(_) => Ok(warp::reply::with_status("Printed successfully", StatusCode::OK)),
-        Err(_) => Ok(warp::reply::with_status("Failed to print", StatusCode::INTERNAL_SERVER_ERROR)),
+        Err(e) => {
+            let response = match e {
+                PrinterError::Input(_) => {
+                    println!("Failed to parse the JSON for the previous print request!");
+                    warp::reply::with_status("Failed to parse the JSON.", StatusCode::BAD_REQUEST)
+                },
+                PrinterError::InvalidResponse(_) => {
+                    warp::reply::with_status("Failed to print: Invalid Response.", StatusCode::BAD_GATEWAY)
+                },
+                PrinterError::Io(_) => {
+                    warp::reply::with_status("Failed to print: IO Error", StatusCode::INTERNAL_SERVER_ERROR)
+                },
+            };
+            Ok(response)
+        }
     }
 }
 
 async fn print_middleman(driver: UsbDriver, json_commands: &str) -> Result<(), PrinterError> {
     println!("print_middleman");
-    print_receipt(driver, json_commands).await.map_err(|e| {
-        // Map your specific error here based on the context of the error
-        match e {
-            PrinterError::Input(error) => PrinterError::Input(error),
-            PrinterError::InvalidResponse(error) => PrinterError::InvalidResponse(error),
-            PrinterError::Io(error) => PrinterError::Io(error)
+    match parse_json(json_commands) {
+        Ok(_) => {
+            // Continue execution if parsing was successful
+            print_receipt(driver, json_commands).await.map_err(|e| {
+                // Map your specific error here based on the context of the error
+                match e {
+                    PrinterError::Input(error) => PrinterError::Input(error),
+                    PrinterError::InvalidResponse(error) => PrinterError::InvalidResponse(error),
+                    PrinterError::Io(error) => PrinterError::Io(error),
+                }
+            })
+        },
+        Err(e) => {
+            // Return the parsing error
+            Err(e)
         }
-    })
+    }
 }
 
 

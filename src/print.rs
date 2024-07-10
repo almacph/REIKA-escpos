@@ -111,6 +111,7 @@ pub async fn handle_test_print(
 }
 
 pub async fn print_receipt(driver: UsbDriver, json_commands: &str) -> Result<(), PrinterError> {
+    println!("Printing the following: {:#?}", json_commands);
     ensure_driver(driver, move |d| {
         let json_commands = json_commands.to_string();
         async move {
