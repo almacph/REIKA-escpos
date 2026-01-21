@@ -4,6 +4,7 @@ use warp::http::StatusCode;
 use warp::reply::json;
 use warp::Reply;
 
+use crate::app::{notify_print_error, notify_print_success};
 use crate::models::{Commands, PrinterTestSchema, StatusResponse};
 use crate::services::PrinterService;
 
@@ -35,12 +36,16 @@ pub async fn handle_test_print(
     request: PrinterTestSchema,
 ) -> Result<impl Reply, Infallible> {
     match service.print_test(request).await {
-        Ok(()) => Ok(warp::reply::with_status(
-            json(&StatusResponse::success()),
-            StatusCode::OK,
-        )),
+        Ok(()) => {
+            notify_print_success("Test print");
+            Ok(warp::reply::with_status(
+                json(&StatusResponse::success()),
+                StatusCode::OK,
+            ))
+        }
         Err(e) => {
             let status = e.status_code();
+            notify_print_error("Test print", &e.to_string());
             Ok(warp::reply::with_status(
                 json(&e.to_response(false)),
                 status,
@@ -70,13 +75,18 @@ pub async fn handle_print(
         }
     };
 
+    let cmd_count = commands.commands.len();
     match service.execute_commands(commands).await {
-        Ok(()) => Ok(warp::reply::with_status(
-            json(&StatusResponse::success()),
-            StatusCode::OK,
-        )),
+        Ok(()) => {
+            notify_print_success(&format!("Print job ({} commands)", cmd_count));
+            Ok(warp::reply::with_status(
+                json(&StatusResponse::success()),
+                StatusCode::OK,
+            ))
+        }
         Err(e) => {
             let status = e.status_code();
+            notify_print_error("Print job", &e.to_string());
             Ok(warp::reply::with_status(
                 json(&e.to_response(false)),
                 status,
