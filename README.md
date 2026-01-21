@@ -2,6 +2,50 @@
 
 ESC/POS thermal printer service for the REIKA POS system.
 
+## Project Structure
+
+```
+src/
+  main.rs              # Entry point - initializes PrinterService and starts server
+  server.rs            # Warp server startup (8 lines)
+  error.rs             # AppError enum with HTTP status code mapping
+
+  routes/
+    mod.rs             # Route composition + CORS configuration
+    print.rs           # Route definitions for /print endpoints
+
+  handlers/
+    mod.rs             # Handler exports
+    print.rs           # Request handlers (status, test print, print commands)
+
+  services/
+    mod.rs             # Service exports
+    printer.rs         # PrinterService - USB driver management, command execution
+
+  models/
+    mod.rs             # Model re-exports
+    command.rs         # Command enum (35+ ESC/POS commands) + type conversions
+    request.rs         # Request DTOs (Commands, PrinterTestSchema)
+    response.rs        # StatusResponse with optional error field
+```
+
+### Architecture
+
+| Layer | Responsibility |
+|-------|---------------|
+| **Routes** | Path definitions, HTTP methods, CORS |
+| **Handlers** | Request/response transformation, calls services |
+| **Services** | Business logic, USB device management, reconnection |
+| **Models** | Data structures, serde serialization |
+| **Error** | Error types → HTTP status codes |
+
+### Key Types
+
+- `PrinterService` - Thread-safe wrapper (`Arc<Mutex<UsbDriver>>`) with auto-reconnect
+- `Command` - Tagged enum for 35+ ESC/POS commands (`#[serde(tag = "command", content = "parameters")]`)
+- `StatusResponse` - API response with `is_connected: bool` and `error: Option<String>`
+- `AppError` - `InvalidInput` (400), `PrinterError` (500), `Internal` (500)
+
 ## Requirements
 
 - Rust 1.85+
@@ -45,11 +89,17 @@ The printer must use **WinUSB** driver (not the default Windows USB Print driver
 
 ## API Endpoints
 
+All endpoints return JSON `StatusResponse`:
+
+```typescript
+{ is_connected: boolean, error?: string }
+```
+
 ### GET /print/test
 Check printer connection status.
 
 ```json
-{"is_connected": true, "error": ""}
+{"is_connected": true}
 ```
 
 ### POST /print/test
@@ -103,6 +153,10 @@ await fetch('http://localhost:55000/print', {
   body: JSON.stringify({ commands: [...] })
 });
 ```
+
+## Related Documentation
+
+- [REIKA-NOTES.md](REIKA-NOTES.md) - Full API specification with examples and consumer integration notes
 
 ## License
 
