@@ -29,11 +29,18 @@ ESC/POS thermal printer service for the REIKA POS system.
 
 Check printer connection status.
 
-**Response:**
+**Response (success):**
 ```json
 {
-  "is_connected": true,
-  "error": null
+  "is_connected": true
+}
+```
+
+**Response (error):**
+```json
+{
+  "is_connected": false,
+  "error": "The thermal printer is either not plugged in, or is in a not ready state."
 }
 ```
 
@@ -41,7 +48,7 @@ Check printer connection status.
 ```typescript
 {
   is_connected: boolean,
-  error?: string        // Present only when is_connected is false
+  error?: string        // Only present when there is an error (omitted on success, not null)
 }
 ```
 
@@ -67,11 +74,18 @@ Send a test print line with optional test page.
 }
 ```
 
-**Response:**
+**Response (success):**
 ```json
 {
-  "is_connected": true,
-  "error": null
+  "is_connected": true
+}
+```
+
+**Response (error):**
+```json
+{
+  "is_connected": false,
+  "error": "Invalid input: ..."
 }
 ```
 
@@ -100,11 +114,18 @@ Send ESC/POS commands to the printer.
 }
 ```
 
-**Response:**
+**Response (success):**
 ```json
 {
-  "is_connected": true,
-  "error": null
+  "is_connected": true
+}
+```
+
+**Response (error):**
+```json
+{
+  "is_connected": false,
+  "error": "Invalid input: ..."
 }
 ```
 
@@ -595,3 +616,64 @@ If REIKA is served over HTTPS, browsers may block requests to `http://localhost:
 | `src/lib/model/print.ts` | Printer status type definitions |
 | `src/routes/diagnose/PrinterTest.svelte` | Test UI component |
 | `src/routes/diagnose/+page.svelte` | Diagnostics page |
+
+---
+
+## Implementation Notes for Consumer Refactoring
+
+### Response Schema Change (v1.0.3+)
+
+The `error` field behavior has changed:
+
+| Version | Success Response | Error Response |
+|---------|------------------|----------------|
+| < 1.0.3 | `{"is_connected": true, "error": "Printer is connected"}` | `{"is_connected": false, "error": "..."}` |
+| >= 1.0.3 | `{"is_connected": true}` | `{"is_connected": false, "error": "..."}` |
+
+**Key difference:** The `error` field is now **omitted** on success (not `null`, not an empty string - completely absent from the JSON).
+
+### TypeScript/Zod Schema Update
+
+Update response validation to handle optional `error`:
+
+```typescript
+// Before (incorrect assumption)
+const PrinterStatusSchema = z.object({
+  is_connected: z.boolean(),
+  error: z.string(),
+});
+
+// After (correct)
+const PrinterStatusSchema = z.object({
+  is_connected: z.boolean(),
+  error: z.string().optional(),
+});
+
+// Usage
+type PrinterStatus = z.infer<typeof PrinterStatusSchema>;
+// { is_connected: boolean; error?: string }
+```
+
+### Checking for Errors
+
+```typescript
+// Recommended pattern
+const response = await fetch('http://localhost:55000/print/test').then(r => r.json());
+const status = PrinterStatusSchema.parse(response);
+
+if (!status.is_connected) {
+  console.error('Printer error:', status.error ?? 'Unknown error');
+}
+
+// Or simply check for error presence
+if (status.error) {
+  console.error('Error:', status.error);
+}
+```
+
+### All Endpoints Now Return JSON
+
+All three endpoints return consistent JSON responses:
+- `GET /print/test` - Returns `PrinterStatus` JSON
+- `POST /print/test` - Returns `PrinterStatus` JSON (previously returned plain text)
+- `POST /print` - Returns `PrinterStatus` JSON (previously returned plain text)
