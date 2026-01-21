@@ -1,14 +1,17 @@
-use print::initialize_device;
-use crate::server::run;
-
-mod server;
-mod print;
+mod error;
+mod handlers;
 mod models;
+mod routes;
+mod server;
+mod services;
 
+use crate::server::run;
+use crate::services::PrinterService;
 
-#[tokio::main(flavor="current_thread")]
+#[tokio::main(flavor = "current_thread")]
 async fn main() {
-    let device =  initialize_device().await;
+    let driver = PrinterService::initialize_device().await;
+    let service = PrinterService::new(driver);
 
-    run(device).await;
+    run(service).await;
 }
