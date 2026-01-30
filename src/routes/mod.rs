@@ -1,8 +1,11 @@
 mod print;
 
+use std::sync::{Arc, Mutex};
+
 use warp::http::Method;
 use warp::Filter;
 
+use crate::app::PrintLog;
 use crate::services::PrinterService;
 
 pub fn cors() -> warp::cors::Cors {
@@ -15,6 +18,7 @@ pub fn cors() -> warp::cors::Cors {
 
 pub fn routes(
     service: PrinterService,
+    print_log: Arc<Mutex<PrintLog>>,
 ) -> impl Filter<Extract = (impl warp::Reply,), Error = warp::Rejection> + Clone {
-    print::print_routes(service).with(cors())
+    print::print_routes(service, print_log).with(cors())
 }

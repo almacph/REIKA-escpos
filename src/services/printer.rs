@@ -2,7 +2,6 @@ use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 
-use escpos::driver::UsbDriver;
 use escpos::errors::PrinterError;
 use escpos::printer::Printer;
 use escpos::utils::Protocol;
@@ -12,24 +11,23 @@ use tokio::time::sleep;
 
 use crate::error::AppError;
 use crate::models::{Command, Commands, JustifyMode, PrinterTestSchema, UnderlineMode};
+use super::usb_driver::{CustomUsbDriver, UsbConfig};
 
 pub const DEFAULT_VENDOR_ID: u16 = 0x0483;
 pub const DEFAULT_PRODUCT_ID: u16 = 0x5840;
 
 #[derive(Clone)]
 pub struct PrinterService {
-    driver: Arc<Mutex<UsbDriver>>,
-    vendor_id: u16,
-    product_id: u16,
+    driver: Arc<Mutex<CustomUsbDriver>>,
+    usb_config: UsbConfig,
     status_tx: Option<watch::Sender<bool>>,
 }
 
 impl PrinterService {
-    pub fn new(driver: UsbDriver, vendor_id: u16, product_id: u16) -> Self {
+    pub fn new(driver: CustomUsbDriver, usb_config: UsbConfig) -> Self {
         Self {
             driver: Arc::new(Mutex::new(driver)),
-            vendor_id,
-            product_id,
+            usb_config,
             status_tx: None,
         }
     }
@@ -45,13 +43,9 @@ impl PrinterService {
         }
     }
 
-    pub fn with_defaults(driver: UsbDriver) -> Self {
-        Self::new(driver, DEFAULT_VENDOR_ID, DEFAULT_PRODUCT_ID)
-    }
-
-    pub async fn initialize_device_with_config(vendor_id: u16, product_id: u16) -> UsbDriver {
+    pub async fn initialize_device_with_config(config: &UsbConfig) -> CustomUsbDriver {
         loop {
-            match UsbDriver::open(vendor_id, product_id, None, None) {
+            match CustomUsbDriver::open(config) {
                 Ok(driver) => {
                     return driver;
                 }
@@ -63,18 +57,20 @@ impl PrinterService {
         }
     }
 
-    pub async fn initialize_device() -> UsbDriver {
-        Self::initialize_device_with_config(DEFAULT_VENDOR_ID, DEFAULT_PRODUCT_ID).await
-    }
-
-    pub fn try_open(vendor_id: u16, product_id: u16) -> Option<UsbDriver> {
-        UsbDriver::open(vendor_id, product_id, None, None).ok()
+    pub fn try_open(config: &UsbConfig) -> Option<CustomUsbDriver> {
+        match CustomUsbDriver::open(config) {
+            Ok(driver) => Some(driver),
+            Err(e) => {
+                println!("USB open error: {:?}", e);
+                None
+            }
+        }
     }
 
     async fn reconnect(&self) {
         self.update_status(false);
         println!("Attempting to reconnect to the USB device...");
-        let new_driver = Self::initialize_device_with_config(self.vendor_id, self.product_id).await;
+        let new_driver = Self::initialize_device_with_config(&self.usb_config).await;
         let mut driver = self.driver.lock().await;
         *driver = new_driver;
         self.update_status(true);
@@ -83,7 +79,7 @@ impl PrinterService {
 
     async fn with_retry<F, Fut, T>(&self, f: F) -> Result<T, AppError>
     where
-        F: Fn(UsbDriver) -> Fut,
+        F: Fn(CustomUsbDriver) -> Fut,
         Fut: Future<Output = Result<T, PrinterError>>,
     {
         loop {
@@ -103,25 +99,28 @@ impl PrinterService {
 
         let initial_result = Self::try_init(driver).await;
         if initial_result.is_ok() {
+            self.update_status(true);
             return true;
         }
 
         // Try to reconnect once (non-blocking)
-        if let Some(new_driver) = Self::try_open(self.vendor_id, self.product_id) {
+        if let Some(new_driver) = Self::try_open(&self.usb_config) {
             let mut driver = self.driver.lock().await;
             *driver = new_driver;
-            self.update_status(true);
 
             let driver_clone = driver.clone();
             drop(driver);
-            return Self::try_init(driver_clone).await.is_ok();
+
+            let is_connected = Self::try_init(driver_clone).await.is_ok();
+            self.update_status(is_connected);
+            return is_connected;
         }
 
         self.update_status(false);
         false
     }
 
-    async fn try_init(driver: UsbDriver) -> Result<(), PrinterError> {
+    async fn try_init(driver: CustomUsbDriver) -> Result<(), PrinterError> {
         let mut printer = Printer::new(driver, Protocol::default(), None);
         printer.init()?;
         Ok(())
@@ -136,7 +135,7 @@ impl PrinterService {
     }
 
     async fn execute_commands_inner(
-        driver: UsbDriver,
+        driver: CustomUsbDriver,
         commands: Vec<Command>,
     ) -> Result<(), PrinterError> {
         let mut printer = Printer::new(driver, Protocol::default(), None);
@@ -199,7 +198,7 @@ impl PrinterService {
     }
 
     async fn print_test_inner(
-        driver: UsbDriver,
+        driver: CustomUsbDriver,
         request: PrinterTestSchema,
     ) -> Result<(), PrinterError> {
         if request.test_page() {

@@ -1,4 +1,4 @@
-#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+// #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")] // Temporarily disabled for debugging
 
 mod app;
 mod error;
@@ -13,7 +13,7 @@ use crate::app::{
     SingleInstanceError, SystemTray,
 };
 use crate::server::run_with_port;
-use crate::services::PrinterService;
+use crate::services::{PrinterService, UsbConfig};
 use std::sync::{Arc, Mutex};
 use tokio::sync::watch;
 
@@ -47,20 +47,30 @@ fn main() {
 
     let server_config = config.clone();
     let server_online_tx = online_tx.clone();
+    let server_print_log = print_log.clone();
     std::thread::spawn(move || {
         let rt = tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime");
         rt.block_on(async {
-            let vendor_id = server_config.printer.vendor_id;
-            let product_id = server_config.printer.product_id;
+            let usb_config = UsbConfig {
+                vendor_id: server_config.printer.resolved_vendor_id(),
+                product_id: server_config.printer.resolved_product_id(),
+                endpoint: server_config.printer.resolved_endpoint(),
+                interface: server_config.printer.resolved_interface(),
+            };
             let port = server_config.server.port;
+            println!(
+                "Preset: {:?}, VID: 0x{:04X}, PID: 0x{:04X}, endpoint: {:?}, interface: {:?}",
+                server_config.printer.preset,
+                usb_config.vendor_id, usb_config.product_id, usb_config.endpoint, usb_config.interface
+            );
 
             loop {
-                if let Some(driver) = PrinterService::try_open(vendor_id, product_id) {
+                if let Some(driver) = PrinterService::try_open(&usb_config) {
                     let _ = server_online_tx.send(true);
                     println!("Printer connected.");
-                    let service = PrinterService::new(driver, vendor_id, product_id)
+                    let service = PrinterService::new(driver, usb_config.clone())
                         .with_status(server_online_tx.clone());
-                    run_with_port(service, port).await;
+                    run_with_port(service, server_print_log.clone(), port).await;
                 } else {
                     let _ = server_online_tx.send(false);
                     println!("Printer not found. Retrying in 5 seconds...");

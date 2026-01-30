@@ -1,5 +1,5 @@
 use crate::app::print_log::LogStatus;
-use crate::app::{notify_printer_offline, notify_printer_online, AppConfig, PrintLog, SystemTray, TrayMessage};
+use crate::app::{notify_printer_offline, notify_printer_online, AppConfig, PrintLog, PrinterPreset, SystemTray, TrayMessage};
 use eframe::egui;
 use std::sync::{Arc, Mutex};
 use tokio::sync::watch;
@@ -10,8 +10,11 @@ pub struct PrinterApp {
     printer_online: watch::Receiver<bool>,
     last_online_status: bool,
     show_settings: bool,
+    settings_preset: PrinterPreset,
     settings_vendor_id: String,
     settings_product_id: String,
+    settings_endpoint: String,
+    settings_interface: String,
     settings_port: String,
     tray: Option<Arc<Mutex<SystemTray>>>,
     should_exit: bool,
@@ -26,9 +29,24 @@ impl PrinterApp {
         printer_online: watch::Receiver<bool>,
         tray: Option<Arc<Mutex<SystemTray>>>,
     ) -> Self {
+        let settings_vendor_id = config.printer.vendor_id
+            .map(|v| format!("0x{:04X}", v))
+            .unwrap_or_default();
+        let settings_product_id = config.printer.product_id
+            .map(|v| format!("0x{:04X}", v))
+            .unwrap_or_default();
+        let settings_endpoint = config.printer.endpoint
+            .map(|v| v.to_string())
+            .unwrap_or_default();
+        let settings_interface = config.printer.interface
+            .map(|v| v.to_string())
+            .unwrap_or_default();
         Self {
-            settings_vendor_id: format!("0x{:04X}", config.printer.vendor_id),
-            settings_product_id: format!("0x{:04X}", config.printer.product_id),
+            settings_preset: config.printer.preset,
+            settings_vendor_id,
+            settings_product_id,
+            settings_endpoint,
+            settings_interface,
             settings_port: config.server.port.to_string(),
             config,
             print_log,
@@ -90,10 +108,16 @@ impl PrinterApp {
                 }
 
                 ui.add_space(8.0);
-                ui.label("XPrinter XP-58IIH");
+                let preset_name = match self.config.printer.preset {
+                    PrinterPreset::Standard => "Standard (XP-58IIH)",
+                    PrinterPreset::IcsAdvent => "ICS Advent Adapter",
+                    PrinterPreset::Manual => "Manual Config",
+                };
+                ui.label(preset_name);
                 ui.label(format!(
                     "USB: 0x{:04X}:0x{:04X}",
-                    self.config.printer.vendor_id, self.config.printer.product_id
+                    self.config.printer.resolved_vendor_id(),
+                    self.config.printer.resolved_product_id()
                 ));
             });
     }
@@ -156,22 +180,70 @@ impl PrinterApp {
         egui::Window::new("Settings")
             .collapsible(false)
             .resizable(false)
+            .min_width(350.0)
             .show(ctx, |ui| {
-                ui.heading("USB Printer Settings");
+                ui.heading("Printer Preset");
                 ui.add_space(8.0);
 
-                egui::Grid::new("settings_grid")
+                ui.horizontal(|ui| {
+                    ui.radio_value(&mut self.settings_preset, PrinterPreset::Standard, "Standard");
+                    ui.label("(XP-58IIH, 0x0483:0x5840)");
+                });
+                ui.horizontal(|ui| {
+                    ui.radio_value(&mut self.settings_preset, PrinterPreset::IcsAdvent, "ICS Advent");
+                    ui.label("(0x0FE6:0x811E, EP:1, IF:0)");
+                });
+                ui.horizontal(|ui| {
+                    ui.radio_value(&mut self.settings_preset, PrinterPreset::Manual, "Manual");
+                    ui.label("(custom settings)");
+                });
+
+                ui.add_space(12.0);
+
+                if self.settings_preset == PrinterPreset::Manual {
+                    ui.heading("Manual USB Settings");
+                    ui.add_space(8.0);
+
+                    egui::Grid::new("manual_settings_grid")
+                        .num_columns(2)
+                        .spacing([10.0, 8.0])
+                        .show(ui, |ui| {
+                            ui.label("Vendor ID:");
+                            ui.text_edit_singleline(&mut self.settings_vendor_id);
+                            ui.end_row();
+
+                            ui.label("Product ID:");
+                            ui.text_edit_singleline(&mut self.settings_product_id);
+                            ui.end_row();
+
+                            ui.label("Endpoint:");
+                            ui.text_edit_singleline(&mut self.settings_endpoint);
+                            ui.end_row();
+
+                            ui.label("Interface:");
+                            ui.text_edit_singleline(&mut self.settings_interface);
+                            ui.end_row();
+                        });
+
+                    ui.add_space(4.0);
+                    ui.label(
+                        egui::RichText::new("Leave endpoint/interface empty for auto-detect")
+                            .weak()
+                            .small(),
+                    );
+                }
+
+                ui.add_space(12.0);
+                ui.separator();
+                ui.add_space(8.0);
+
+                ui.heading("Server Settings");
+                ui.add_space(8.0);
+
+                egui::Grid::new("server_settings_grid")
                     .num_columns(2)
                     .spacing([10.0, 8.0])
                     .show(ui, |ui| {
-                        ui.label("Vendor ID:");
-                        ui.text_edit_singleline(&mut self.settings_vendor_id);
-                        ui.end_row();
-
-                        ui.label("Product ID:");
-                        ui.text_edit_singleline(&mut self.settings_product_id);
-                        ui.end_row();
-
                         ui.label("Server Port:");
                         ui.text_edit_singleline(&mut self.settings_port);
                         ui.end_row();
@@ -187,18 +259,26 @@ impl PrinterApp {
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
                     if ui.button("Save").clicked() {
-                        if let Ok(vid) = u16::from_str_radix(
-                            self.settings_vendor_id.trim_start_matches("0x"),
-                            16,
-                        ) {
-                            self.config.printer.vendor_id = vid;
+                        self.config.printer.preset = self.settings_preset;
+
+                        if self.settings_preset == PrinterPreset::Manual {
+                            self.config.printer.vendor_id = u16::from_str_radix(
+                                self.settings_vendor_id.trim_start_matches("0x"),
+                                16,
+                            ).ok();
+                            self.config.printer.product_id = u16::from_str_radix(
+                                self.settings_product_id.trim_start_matches("0x"),
+                                16,
+                            ).ok();
+                            self.config.printer.endpoint = self.settings_endpoint.parse().ok();
+                            self.config.printer.interface = self.settings_interface.parse().ok();
+                        } else {
+                            self.config.printer.vendor_id = None;
+                            self.config.printer.product_id = None;
+                            self.config.printer.endpoint = None;
+                            self.config.printer.interface = None;
                         }
-                        if let Ok(pid) = u16::from_str_radix(
-                            self.settings_product_id.trim_start_matches("0x"),
-                            16,
-                        ) {
-                            self.config.printer.product_id = pid;
-                        }
+
                         if let Ok(port) = self.settings_port.parse() {
                             self.config.server.port = port;
                         }
@@ -206,10 +286,19 @@ impl PrinterApp {
                         self.show_settings = false;
                     }
                     if ui.button("Cancel").clicked() {
-                        self.settings_vendor_id =
-                            format!("0x{:04X}", self.config.printer.vendor_id);
-                        self.settings_product_id =
-                            format!("0x{:04X}", self.config.printer.product_id);
+                        self.settings_preset = self.config.printer.preset;
+                        self.settings_vendor_id = self.config.printer.vendor_id
+                            .map(|v| format!("0x{:04X}", v))
+                            .unwrap_or_default();
+                        self.settings_product_id = self.config.printer.product_id
+                            .map(|v| format!("0x{:04X}", v))
+                            .unwrap_or_default();
+                        self.settings_endpoint = self.config.printer.endpoint
+                            .map(|v| v.to_string())
+                            .unwrap_or_default();
+                        self.settings_interface = self.config.printer.interface
+                            .map(|v| v.to_string())
+                            .unwrap_or_default();
                         self.settings_port = self.config.server.port.to_string();
                         self.show_settings = false;
                     }

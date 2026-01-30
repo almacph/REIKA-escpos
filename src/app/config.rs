@@ -11,10 +11,61 @@ pub struct AppConfig {
     pub ui: UiConfig,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum PrinterPreset {
+    #[default]
+    Standard,
+    IcsAdvent,
+    Manual,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PrinterConfig {
-    pub vendor_id: u16,
-    pub product_id: u16,
+    #[serde(default)]
+    pub preset: PrinterPreset,
+    #[serde(default)]
+    pub vendor_id: Option<u16>,
+    #[serde(default)]
+    pub product_id: Option<u16>,
+    #[serde(default)]
+    pub endpoint: Option<u8>,
+    #[serde(default)]
+    pub interface: Option<u8>,
+}
+
+impl PrinterConfig {
+    pub fn resolved_vendor_id(&self) -> u16 {
+        match self.preset {
+            PrinterPreset::Standard => 0x0483,
+            PrinterPreset::IcsAdvent => 0x0FE6,
+            PrinterPreset::Manual => self.vendor_id.unwrap_or(0x0483),
+        }
+    }
+
+    pub fn resolved_product_id(&self) -> u16 {
+        match self.preset {
+            PrinterPreset::Standard => 0x5840,
+            PrinterPreset::IcsAdvent => 0x811E,
+            PrinterPreset::Manual => self.product_id.unwrap_or(0x5840),
+        }
+    }
+
+    pub fn resolved_endpoint(&self) -> Option<u8> {
+        match self.preset {
+            PrinterPreset::Standard => None,
+            PrinterPreset::IcsAdvent => Some(1),
+            PrinterPreset::Manual => self.endpoint,
+        }
+    }
+
+    pub fn resolved_interface(&self) -> Option<u8> {
+        match self.preset {
+            PrinterPreset::Standard => None,
+            PrinterPreset::IcsAdvent => Some(0),
+            PrinterPreset::Manual => self.interface,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -29,11 +80,13 @@ pub struct UiConfig {
 
 impl Default for AppConfig {
     fn default() -> Self {
-        use crate::services::{DEFAULT_VENDOR_ID, DEFAULT_PRODUCT_ID};
         Self {
             printer: PrinterConfig {
-                vendor_id: DEFAULT_VENDOR_ID,
-                product_id: DEFAULT_PRODUCT_ID,
+                preset: PrinterPreset::Standard,
+                vendor_id: None,
+                product_id: None,
+                endpoint: None,
+                interface: None,
             },
             server: ServerConfig { port: 55000 },
             ui: UiConfig {
@@ -54,14 +107,21 @@ impl AppConfig {
 
     pub fn load() -> Self {
         let path = Self::config_path();
+        println!("Config path: {:?}", path);
         if path.exists() {
+            println!("Config file found, loading...");
             match fs::read_to_string(&path) {
                 Ok(contents) => match toml::from_str(&contents) {
-                    Ok(config) => return config,
+                    Ok(config) => {
+                        println!("Config loaded successfully");
+                        return config;
+                    }
                     Err(e) => eprintln!("Failed to parse config: {}", e),
                 },
                 Err(e) => eprintln!("Failed to read config: {}", e),
             }
+        } else {
+            println!("Config file not found, using defaults");
         }
 
         let config = Self::default();

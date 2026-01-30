@@ -1,0 +1,205 @@
+use escpos::driver::Driver;
+use escpos::errors::{PrinterError, Result};
+use rusb::{Context, DeviceHandle, Direction, TransferType, UsbContext};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+const DEFAULT_TIMEOUT_SECONDS: u64 = 5;
+
+#[derive(Clone)]
+pub struct CustomUsbDriver {
+    vendor_id: u16,
+    product_id: u16,
+    output_endpoint: u8,
+    input_endpoint: u8,
+    device: Arc<Mutex<DeviceHandle<Context>>>,
+    timeout: Duration,
+}
+
+#[derive(Clone, Debug)]
+pub struct UsbConfig {
+    pub vendor_id: u16,
+    pub product_id: u16,
+    pub endpoint: Option<u8>,
+    pub interface: Option<u8>,
+}
+
+impl CustomUsbDriver {
+    pub fn open(config: &UsbConfig) -> Result<Self> {
+        let context = Context::new().map_err(|e: rusb::Error| PrinterError::Io(e.to_string()))?;
+        let devices = context.devices().map_err(|e: rusb::Error| PrinterError::Io(e.to_string()))?;
+
+        for device in devices.iter() {
+            let device_descriptor = device
+                .device_descriptor()
+                .map_err(|e: rusb::Error| PrinterError::Io(e.to_string()))?;
+
+            if device_descriptor.vendor_id() == config.vendor_id
+                && device_descriptor.product_id() == config.product_id
+            {
+                let config_descriptor = device
+                    .active_config_descriptor()
+                    .map_err(|e: rusb::Error| PrinterError::Io(e.to_string()))?;
+
+                // Print all available endpoints for debugging
+                Self::print_device_info(&config_descriptor);
+
+                // Try to find endpoints - use manual values if provided, otherwise auto-discover
+                let (output_endpoint, input_endpoint, interface_number) =
+                    if let (Some(ep), Some(iface)) = (config.endpoint, config.interface) {
+                        // Manual endpoint configuration
+                        // endpoint is the OUT endpoint, IN endpoint is typically endpoint | 0x80
+                        let out_ep = ep;
+                        let in_ep = ep | 0x80;
+                        println!(
+                            "Using manual USB config: interface={}, out_ep=0x{:02X}, in_ep=0x{:02X}",
+                            iface, out_ep, in_ep
+                        );
+                        (out_ep, in_ep, iface)
+                    } else {
+                        // Auto-discover endpoints (original behavior)
+                        Self::discover_endpoints(&config_descriptor)?
+                    };
+
+                let device_handle: DeviceHandle<Context> = device.open()
+                    .map_err(|e: rusb::Error| PrinterError::Io(e.to_string()))?;
+
+                #[cfg(not(target_os = "windows"))]
+                match device_handle.kernel_driver_active(interface_number) {
+                    Ok(active) => {
+                        if active {
+                            device_handle.detach_kernel_driver(interface_number)
+                                .map_err(|e: rusb::Error| PrinterError::Io(e.to_string()))?;
+                        }
+                    }
+                    Err(e) => return Err(PrinterError::Io(e.to_string())),
+                }
+
+                device_handle
+                    .claim_interface(interface_number)
+                    .map_err(|e: rusb::Error| PrinterError::Io(e.to_string()))?;
+
+                return Ok(Self {
+                    vendor_id: config.vendor_id,
+                    product_id: config.product_id,
+                    output_endpoint,
+                    input_endpoint,
+                    device: Arc::new(Mutex::new(device_handle)),
+                    timeout: Duration::from_secs(DEFAULT_TIMEOUT_SECONDS),
+                });
+            }
+        }
+
+        Err(PrinterError::Io("USB device not found".to_string()))
+    }
+
+    fn print_device_info(config_descriptor: &rusb::ConfigDescriptor) {
+        println!("=== USB Device Endpoints ===");
+        for interface in config_descriptor.interfaces() {
+            for descriptor in interface.descriptors() {
+                let iface_num = descriptor.interface_number();
+                let iface_class = descriptor.class_code();
+                println!(
+                    "Interface {}: class={} subclass={} protocol={}",
+                    iface_num,
+                    iface_class,
+                    descriptor.sub_class_code(),
+                    descriptor.protocol_code()
+                );
+                for endpoint in descriptor.endpoint_descriptors() {
+                    let dir = match endpoint.direction() {
+                        Direction::In => "IN",
+                        Direction::Out => "OUT",
+                    };
+                    let transfer = match endpoint.transfer_type() {
+                        TransferType::Bulk => "Bulk",
+                        TransferType::Control => "Control",
+                        TransferType::Interrupt => "Interrupt",
+                        TransferType::Isochronous => "Isochronous",
+                    };
+                    println!(
+                        "  Endpoint 0x{:02X}: {} {} (max_packet={})",
+                        endpoint.address(),
+                        dir,
+                        transfer,
+                        endpoint.max_packet_size()
+                    );
+                }
+            }
+        }
+        println!("============================");
+    }
+
+    fn discover_endpoints(
+        config_descriptor: &rusb::ConfigDescriptor,
+    ) -> Result<(u8, u8, u8)> {
+        config_descriptor
+            .interfaces()
+            .flat_map(|interface| interface.descriptors())
+            .flat_map(|descriptor| {
+                let interface_number = descriptor.interface_number();
+
+                let mut input_endpoint = None;
+                let mut output_endpoint = None;
+                for endpoint in descriptor.endpoint_descriptors() {
+                    if endpoint.transfer_type() == TransferType::Bulk
+                        && endpoint.direction() == Direction::In
+                    {
+                        input_endpoint = Some(endpoint.address());
+                    } else if endpoint.transfer_type() == TransferType::Bulk
+                        && endpoint.direction() == Direction::Out
+                    {
+                        output_endpoint = Some(endpoint.address());
+                    }
+                }
+
+                match (output_endpoint, input_endpoint) {
+                    (Some(out), Some(inp)) => Some((out, inp, interface_number)),
+                    _ => None,
+                }
+            })
+            .next()
+            .ok_or_else(|| {
+                PrinterError::Io(
+                    "no suitable endpoints or interface number found for USB device".to_string(),
+                )
+            })
+    }
+}
+
+impl Driver for CustomUsbDriver {
+    fn name(&self) -> String {
+        format!(
+            "CustomUSB (VID: 0x{:04X}, PID: 0x{:04X}, out: 0x{:02X}, in: 0x{:02X})",
+            self.vendor_id, self.product_id, self.output_endpoint, self.input_endpoint
+        )
+    }
+
+    fn write(&self, data: &[u8]) -> Result<()> {
+        self.device
+            .lock()
+            .map_err(|e| PrinterError::Io(e.to_string()))?
+            .write_bulk(self.output_endpoint, data, self.timeout)
+            .map_err(|e| {
+                PrinterError::Io(format!(
+                    "write_bulk to endpoint 0x{:02X} failed: {}",
+                    self.output_endpoint, e
+                ))
+            })?;
+        Ok(())
+    }
+
+    fn read(&self, buf: &mut [u8]) -> Result<usize> {
+        let size = self
+            .device
+            .lock()
+            .map_err(|e| PrinterError::Io(e.to_string()))?
+            .read_bulk(self.input_endpoint, buf, self.timeout)
+            .map_err(|e| PrinterError::Io(e.to_string()))?;
+        Ok(size)
+    }
+
+    fn flush(&self) -> Result<()> {
+        Ok(())
+    }
+}
