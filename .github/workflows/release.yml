@@ -1,0 +1,53 @@
+name: Build and Release
+
+on:
+  push:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-gnu
+
+      - name: Install MinGW
+        run: sudo apt-get update && sudo apt-get install -y mingw-w64
+
+      - name: Build Windows executable
+        run: chmod +x build-windows.sh && ./build-windows.sh
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: reika-escpos-windows
+          path: target/x86_64-pc-windows-gnu/release/reika-escpos.exe
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: reika-escpos-windows
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: Build ${{ github.run_number }}
+          files: reika-escpos.exe
+          generate_release_notes: true
