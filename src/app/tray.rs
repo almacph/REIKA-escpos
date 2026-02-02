@@ -1,32 +1,64 @@
-use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::OnceLock;
 use tray_icon::{
-    menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem},
+    menu::{Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem},
     TrayIcon, TrayIconBuilder,
 };
 
-pub enum TrayMessage {
-    Show,
-    Exit,
-    UpdateStatus(bool),
+static EXIT_REQUESTED: AtomicBool = AtomicBool::new(false);
+static SHOW_REQUESTED: AtomicBool = AtomicBool::new(false);
+static EXIT_MENU_ID: OnceLock<MenuId> = OnceLock::new();
+static SHOW_MENU_ID: OnceLock<MenuId> = OnceLock::new();
+
+/// Check if exit has been requested (can be called without tray mutex)
+pub fn is_exit_requested() -> bool {
+    EXIT_REQUESTED.load(Ordering::SeqCst)
+}
+
+/// Check if show has been requested and clear the flag
+pub fn take_show_requested() -> bool {
+    SHOW_REQUESTED.swap(false, Ordering::SeqCst)
+}
+
+/// Request application exit (can be called without tray mutex)
+fn request_exit() {
+    EXIT_REQUESTED.store(true, Ordering::SeqCst);
+}
+
+/// Request window to be shown (can be called without tray mutex)
+fn request_show() {
+    SHOW_REQUESTED.store(true, Ordering::SeqCst);
+}
+
+/// Poll menu events without holding the tray mutex.
+/// Sets atomic flags for exit and show events.
+pub fn poll_tray_menu_events() {
+    while let Ok(event) = MenuEvent::receiver().try_recv() {
+        if let Some(exit_id) = EXIT_MENU_ID.get() {
+            if &event.id == exit_id {
+                request_exit();
+            }
+        }
+        if let Some(show_id) = SHOW_MENU_ID.get() {
+            if &event.id == show_id {
+                request_show();
+            }
+        }
+    }
 }
 
 pub struct SystemTray {
     _tray_icon: TrayIcon,
-    pub message_sender: Sender<TrayMessage>,
-    message_receiver: Receiver<TrayMessage>,
-    show_item_id: tray_icon::menu::MenuId,
-    exit_item_id: tray_icon::menu::MenuId,
 }
 
 impl SystemTray {
     pub fn new() -> Result<Self, Box<dyn std::error::Error>> {
-        let (message_sender, message_receiver) = channel();
-
         let show_item = MenuItem::new("Show Window", true, None);
         let exit_item = MenuItem::new("Exit", true, None);
 
-        let show_item_id = show_item.id().clone();
-        let exit_item_id = exit_item.id().clone();
+        // Store menu IDs in static for lock-free access
+        let _ = SHOW_MENU_ID.set(show_item.id().clone());
+        let _ = EXIT_MENU_ID.set(exit_item.id().clone());
 
         let menu = Menu::new();
         menu.append(&show_item)?;
@@ -43,10 +75,6 @@ impl SystemTray {
 
         Ok(Self {
             _tray_icon: tray_icon,
-            message_sender,
-            message_receiver,
-            show_item_id,
-            exit_item_id,
         })
     }
 
@@ -96,21 +124,4 @@ impl SystemTray {
         let _ = self._tray_icon.set_tooltip(Some(tooltip));
     }
 
-    pub fn poll_events(&mut self) -> Option<TrayMessage> {
-        // Check menu events from tray-icon's global receiver
-        if let Ok(event) = MenuEvent::receiver().try_recv() {
-            if event.id == self.show_item_id {
-                return Some(TrayMessage::Show);
-            } else if event.id == self.exit_item_id {
-                return Some(TrayMessage::Exit);
-            }
-        }
-
-        // Check internal message channel
-        if let Ok(msg) = self.message_receiver.try_recv() {
-            return Some(msg);
-        }
-
-        None
-    }
 }

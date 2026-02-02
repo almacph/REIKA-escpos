@@ -4,6 +4,8 @@ use std::collections::VecDeque;
 use std::fs;
 use std::path::PathBuf;
 
+use crate::models::Command;
+
 const LOG_FILENAME: &str = "print_log.json";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -13,6 +15,9 @@ pub struct LogEntry {
     pub status: LogStatus,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// The print commands that were executed (for receipt preview)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub commands: Option<Vec<Command>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -70,12 +75,13 @@ impl PrintLog {
         Ok(())
     }
 
-    pub fn add_entry(&mut self, summary: String, status: LogStatus, error: Option<String>) {
+    pub fn add_entry(&mut self, summary: String, status: LogStatus, error: Option<String>, commands: Option<Vec<Command>>) {
         let entry = LogEntry {
             timestamp: Local::now(),
             summary,
             status,
             error,
+            commands,
         };
         self.entries.push_front(entry);
         self.trim();
@@ -83,11 +89,19 @@ impl PrintLog {
     }
 
     pub fn add_success(&mut self, summary: String) {
-        self.add_entry(summary, LogStatus::Success, None);
+        self.add_entry(summary, LogStatus::Success, None, None);
+    }
+
+    pub fn add_success_with_commands(&mut self, summary: String, commands: Vec<Command>) {
+        self.add_entry(summary, LogStatus::Success, None, Some(commands));
     }
 
     pub fn add_error(&mut self, summary: String, error: String) {
-        self.add_entry(summary, LogStatus::Error, Some(error));
+        self.add_entry(summary, LogStatus::Error, Some(error), None);
+    }
+
+    pub fn add_error_with_commands(&mut self, summary: String, error: String, commands: Vec<Command>) {
+        self.add_entry(summary, LogStatus::Error, Some(error), Some(commands));
     }
 
     fn trim(&mut self) {

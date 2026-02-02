@@ -77,11 +77,39 @@ impl PrinterService {
         println!("Reconnected to the USB device.");
     }
 
+    /// Force a fresh USB connection before operations.
+    /// This helps recover from stale connections after sleep/hibernate.
+    async fn refresh_connection(&self) -> bool {
+        // Drop the old connection and create a fresh one
+        if let Some(new_driver) = Self::try_open(&self.usb_config) {
+            let mut driver = self.driver.lock().await;
+            // Replace with fresh connection
+            *driver = new_driver;
+            drop(driver);
+
+            // Verify the new connection works
+            let driver_clone = self.driver.lock().await.clone();
+            if Self::try_init(driver_clone).await.is_ok() {
+                self.update_status(true);
+                return true;
+            }
+        }
+        self.update_status(false);
+        false
+    }
+
     async fn with_retry<F, Fut, T>(&self, f: F) -> Result<T, AppError>
     where
         F: Fn(CustomUsbDriver) -> Fut,
         Fut: Future<Output = Result<T, PrinterError>>,
     {
+        // Always refresh the connection before operations.
+        // This ensures we have a valid USB handle after sleep/hibernate.
+        if !self.refresh_connection().await {
+            println!("Failed to establish USB connection, waiting for device...");
+            self.reconnect().await;
+        }
+
         loop {
             let driver = self.driver.lock().await.clone();
             match f(driver).await {
@@ -95,29 +123,9 @@ impl PrinterService {
     }
 
     pub async fn check_connection(&self) -> bool {
-        let driver = self.driver.lock().await.clone();
-
-        let initial_result = Self::try_init(driver).await;
-        if initial_result.is_ok() {
-            self.update_status(true);
-            return true;
-        }
-
-        // Try to reconnect once (non-blocking)
-        if let Some(new_driver) = Self::try_open(&self.usb_config) {
-            let mut driver = self.driver.lock().await;
-            *driver = new_driver;
-
-            let driver_clone = driver.clone();
-            drop(driver);
-
-            let is_connected = Self::try_init(driver_clone).await.is_ok();
-            self.update_status(is_connected);
-            return is_connected;
-        }
-
-        self.update_status(false);
-        false
+        // Always try to establish a fresh connection.
+        // This ensures accurate status after sleep/hibernate where old handles become stale.
+        self.refresh_connection().await
     }
 
     async fn try_init(driver: CustomUsbDriver) -> Result<(), PrinterError> {

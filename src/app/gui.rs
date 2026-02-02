@@ -1,5 +1,5 @@
 use crate::app::print_log::LogStatus;
-use crate::app::{notify_printer_offline, notify_printer_online, AppConfig, PrintLog, PrinterPreset, SystemTray, TrayMessage};
+use crate::app::{is_exit_requested, notify_printer_offline, notify_printer_online, poll_tray_menu_events, render_receipt_preview, take_show_requested, AppConfig, LogEntry, PrintLog, PrinterPreset, SystemTray};
 use eframe::egui;
 use std::sync::{Arc, Mutex};
 use tokio::sync::watch;
@@ -19,6 +19,8 @@ pub struct PrinterApp {
     tray: Option<Arc<Mutex<SystemTray>>>,
     should_exit: bool,
     minimized_to_tray: bool,
+    /// Currently selected log entry for preview
+    preview_entry: Option<LogEntry>,
 }
 
 impl PrinterApp {
@@ -56,6 +58,7 @@ impl PrinterApp {
             tray,
             should_exit: false,
             minimized_to_tray: false,
+            preview_entry: None,
         }
     }
 
@@ -122,11 +125,13 @@ impl PrinterApp {
             });
     }
 
-    fn render_log_panel(&self, ui: &mut egui::Ui) {
+    fn render_log_panel(&mut self, ui: &mut egui::Ui) {
         egui::Frame::group(ui.style())
             .fill(ui.style().visuals.window_fill)
             .show(ui, |ui| {
                 ui.heading("Print Log");
+                ui.add_space(2.0);
+                ui.label(egui::RichText::new("Click an entry to preview the receipt").weak().small());
                 ui.add_space(4.0);
 
                 let log = self.print_log.lock().unwrap();
@@ -134,46 +139,119 @@ impl PrinterApp {
                 if log.is_empty() {
                     ui.label(egui::RichText::new("No print jobs yet").italics().weak());
                 } else {
+                    // Collect entries to avoid borrow issues
+                    let entries: Vec<_> = log.entries().cloned().collect();
+                    drop(log);
+
                     egui::ScrollArea::vertical()
                         .max_height(250.0)
                         .show(ui, |ui| {
-                            for entry in log.entries() {
-                                ui.horizontal(|ui| {
+                            for entry in entries {
+                                let has_commands = entry.commands.is_some();
+
+                                let response = ui.horizontal(|ui| {
                                     let time_str = entry.timestamp.format("%H:%M:%S").to_string();
                                     ui.label(egui::RichText::new(&time_str).monospace().weak());
 
-                                    ui.label(&entry.summary);
+                                    // Make the summary clickable if it has commands
+                                    if has_commands {
+                                        if ui.link(&entry.summary).clicked() {
+                                            self.preview_entry = Some(entry.clone());
+                                        }
+                                    } else {
+                                        ui.label(&entry.summary);
+                                    }
 
                                     ui.with_layout(
                                         egui::Layout::right_to_left(egui::Align::Center),
-                                        |ui| match entry.status {
-                                            LogStatus::Success => {
-                                                ui.label(
-                                                    egui::RichText::new("\u{2713} Success")
-                                                        .color(egui::Color32::from_rgb(
-                                                            100, 200, 100,
-                                                        )),
-                                                );
+                                        |ui| {
+                                            // Show preview icon if commands are available
+                                            if has_commands {
+                                                ui.label(egui::RichText::new("\u{1F4C4}").weak());
                                             }
-                                            LogStatus::Error => {
-                                                let error_text =
-                                                    entry.error.as_deref().unwrap_or("Error");
-                                                ui.label(
-                                                    egui::RichText::new(format!(
-                                                        "\u{2717} {}",
-                                                        error_text
-                                                    ))
-                                                    .color(egui::Color32::from_rgb(200, 100, 100)),
-                                                );
+
+                                            match entry.status {
+                                                LogStatus::Success => {
+                                                    ui.label(
+                                                        egui::RichText::new("\u{2713}")
+                                                            .color(egui::Color32::from_rgb(
+                                                                100, 200, 100,
+                                                            )),
+                                                    );
+                                                }
+                                                LogStatus::Error => {
+                                                    ui.label(
+                                                        egui::RichText::new("\u{2717}")
+                                                            .color(egui::Color32::from_rgb(200, 100, 100)),
+                                                    );
+                                                }
                                             }
                                         },
                                     );
                                 });
+
+                                // Make the whole row clickable if it has commands
+                                if has_commands && response.response.interact(egui::Sense::click()).clicked() {
+                                    self.preview_entry = Some(entry);
+                                }
+
                                 ui.separator();
                             }
                         });
                 }
             });
+    }
+
+    fn render_preview_window(&mut self, ctx: &egui::Context) {
+        if let Some(entry) = &self.preview_entry.clone() {
+            let mut open = true;
+            egui::Window::new("Receipt Preview")
+                .open(&mut open)
+                .collapsible(false)
+                .resizable(true)
+                .default_size([350.0, 450.0])
+                .show(ctx, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new(&entry.summary).strong());
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            let time_str = entry.timestamp.format("%Y-%m-%d %H:%M:%S").to_string();
+                            ui.label(egui::RichText::new(&time_str).weak());
+                        });
+                    });
+
+                    match entry.status {
+                        LogStatus::Success => {
+                            ui.label(
+                                egui::RichText::new("\u{2713} Printed successfully")
+                                    .color(egui::Color32::from_rgb(100, 200, 100)),
+                            );
+                        }
+                        LogStatus::Error => {
+                            let error_text = entry.error.as_deref().unwrap_or("Unknown error");
+                            ui.label(
+                                egui::RichText::new(format!("\u{2717} Error: {}", error_text))
+                                    .color(egui::Color32::from_rgb(200, 100, 100)),
+                            );
+                        }
+                    }
+
+                    ui.add_space(8.0);
+                    ui.separator();
+                    ui.add_space(8.0);
+
+                    if let Some(commands) = &entry.commands {
+                        ui.label(egui::RichText::new("Receipt Mockup:").strong());
+                        ui.add_space(4.0);
+                        render_receipt_preview(ui, commands);
+                    } else {
+                        ui.label(egui::RichText::new("No receipt data available").italics().weak());
+                    }
+                });
+
+            if !open {
+                self.preview_entry = None;
+            }
+        }
     }
 
     fn render_settings_window(&mut self, ctx: &egui::Context) {
@@ -307,6 +385,15 @@ impl PrinterApp {
     }
 
     fn handle_tray_events(&mut self, ctx: &egui::Context) {
+        // Poll menu events - this sets atomic flags for exit/show
+        poll_tray_menu_events();
+
+        // Check if show was requested (clears the flag)
+        if take_show_requested() {
+            self.show_window(ctx);
+        }
+
+        // Update tray icon status (needs lock, but non-critical)
         if let Some(tray) = &self.tray {
             if let Ok(mut tray) = tray.try_lock() {
                 let is_online = *self.printer_online.borrow();
@@ -323,24 +410,18 @@ impl PrinterApp {
 
                     self.last_online_status = is_online;
                 }
-
-                while let Some(msg) = tray.poll_events() {
-                    match msg {
-                        TrayMessage::Show => {
-                            self.minimized_to_tray = false;
-                            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
-                            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
-                        }
-                        TrayMessage::Exit => {
-                            self.should_exit = true;
-                        }
-                        TrayMessage::UpdateStatus(online) => {
-                            tray.update_status(online);
-                        }
-                    }
-                }
             }
         }
+    }
+
+    fn show_window(&mut self, ctx: &egui::Context) {
+        self.minimized_to_tray = false;
+        // Order matters: first make visible, then unminimize, then focus
+        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+        // Request immediate repaint to ensure UI updates
+        ctx.request_repaint();
     }
 }
 
@@ -351,16 +432,17 @@ impl eframe::App for PrinterApp {
 
         self.handle_tray_events(ctx);
 
-        if self.should_exit {
-            // Force exit the application
+        // Check both our local flag and the atomic exit flag (for reliable exit)
+        if self.should_exit || is_exit_requested() {
+            // Force exit the application immediately
             std::process::exit(0);
         }
 
         if ctx.input(|i| i.viewport().close_requested()) {
             if self.tray.is_some() {
                 ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-                // Minimize the window instead of hiding it completely
-                ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+                // Hide the window completely to system tray
+                ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
                 self.minimized_to_tray = true;
                 return;
             }
@@ -406,5 +488,7 @@ impl eframe::App for PrinterApp {
         if self.show_settings {
             self.render_settings_window(ctx);
         }
+
+        self.render_preview_window(ctx);
     }
 }

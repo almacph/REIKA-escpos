@@ -90,12 +90,13 @@ pub async fn handle_print(
     };
 
     let cmd_count = commands.commands.len();
+    let commands_for_log = commands.commands.clone();
     match service.execute_commands(commands).await {
         Ok(()) => {
             let summary = format!("Print job ({} commands)", cmd_count);
             notify_print_success(&summary);
             if let Ok(mut log) = print_log.lock() {
-                log.add_success(summary);
+                log.add_success_with_commands(summary, commands_for_log);
             }
             Ok(warp::reply::with_status(
                 json(&StatusResponse::success()),
@@ -107,7 +108,7 @@ pub async fn handle_print(
             let error_msg = e.to_string();
             notify_print_error("Print job", &error_msg);
             if let Ok(mut log) = print_log.lock() {
-                log.add_error(format!("Print job ({} commands)", cmd_count), error_msg);
+                log.add_error_with_commands(format!("Print job ({} commands)", cmd_count), error_msg, commands_for_log);
             }
             Ok(warp::reply::with_status(
                 json(&e.to_response(false)),
