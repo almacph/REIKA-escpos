@@ -5,16 +5,9 @@ use crate::app::PrintLog;
 use crate::routes::routes;
 use crate::services::PrinterService;
 
-pub const DEFAULT_PORT: u16 = 55000;
 const HEALTH_CHECK_INTERVAL_SECS: u64 = 30;
 
-pub async fn run(service: PrinterService, print_log: Arc<Mutex<PrintLog>>) {
-    run_with_port(service, print_log, DEFAULT_PORT).await;
-}
-
 pub async fn run_with_port(service: PrinterService, print_log: Arc<Mutex<PrintLog>>, port: u16) {
-    // Spawn a background task to periodically check USB connection health.
-    // This keeps the status up-to-date after sleep/hibernate.
     let health_service = service.clone();
     tokio::spawn(async move {
         loop {
@@ -24,6 +17,5 @@ pub async fn run_with_port(service: PrinterService, print_log: Arc<Mutex<PrintLo
     });
 
     let routes = routes(service, print_log);
-    println!("Serving the server on 127.0.0.1:{}", port);
     warp::serve(routes).run(([127, 0, 0, 1], port)).await;
 }

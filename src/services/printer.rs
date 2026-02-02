@@ -13,9 +13,6 @@ use crate::error::AppError;
 use crate::models::{Command, Commands, JustifyMode, PrinterTestSchema, UnderlineMode};
 use super::usb_driver::{CustomUsbDriver, UsbConfig};
 
-pub const DEFAULT_VENDOR_ID: u16 = 0x0483;
-pub const DEFAULT_PRODUCT_ID: u16 = 0x5840;
-
 #[derive(Clone)]
 pub struct PrinterService {
     driver: Arc<Mutex<CustomUsbDriver>>,

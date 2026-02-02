@@ -37,13 +37,7 @@ fn main() {
 
     let (online_tx, online_rx) = watch::channel(false);
 
-    let tray = match SystemTray::new() {
-        Ok(tray) => Some(Arc::new(Mutex::new(tray))),
-        Err(e) => {
-            eprintln!("Failed to create system tray: {}", e);
-            None
-        }
-    };
+    let tray_active = SystemTray::new().is_ok();
 
     let server_config = config.clone();
     let server_online_tx = online_tx.clone();
@@ -58,22 +52,15 @@ fn main() {
                 interface: server_config.printer.resolved_interface(),
             };
             let port = server_config.server.port;
-            println!(
-                "Preset: {:?}, VID: 0x{:04X}, PID: 0x{:04X}, endpoint: {:?}, interface: {:?}",
-                server_config.printer.preset,
-                usb_config.vendor_id, usb_config.product_id, usb_config.endpoint, usb_config.interface
-            );
 
             loop {
                 if let Some(driver) = PrinterService::try_open(&usb_config) {
                     let _ = server_online_tx.send(true);
-                    println!("Printer connected.");
                     let service = PrinterService::new(driver, usb_config.clone())
                         .with_status(server_online_tx.clone());
                     run_with_port(service, server_print_log.clone(), port).await;
                 } else {
                     let _ = server_online_tx.send(false);
-                    println!("Printer not found. Retrying in 5 seconds...");
                     tokio::time::sleep(std::time::Duration::from_secs(5)).await;
                 }
             }
@@ -96,7 +83,7 @@ fn main() {
                 config,
                 print_log,
                 online_rx,
-                tray,
+                tray_active,
             )))
         }),
     );

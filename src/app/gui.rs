@@ -1,8 +1,69 @@
 use crate::app::print_log::LogStatus;
-use crate::app::{is_exit_requested, notify_printer_offline, notify_printer_online, poll_tray_menu_events, render_receipt_preview, take_show_requested, AppConfig, LogEntry, PrintLog, PrinterPreset, SystemTray};
+use crate::app::{is_exit_requested, notify_printer_offline, notify_printer_online, render_receipt_preview, take_show_requested, update_tray_status, AppConfig, LogEntry, PrintLog, PrinterPreset};
 use eframe::egui;
 use std::sync::{Arc, Mutex};
 use tokio::sync::watch;
+
+#[cfg(target_os = "windows")]
+use windows::Win32::UI::WindowsAndMessaging::{
+    BringWindowToTop, FindWindowW, GetForegroundWindow, GetWindowThreadProcessId,
+    SetForegroundWindow, SetWindowPos, ShowWindow,
+    HWND_TOP, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW,
+    SW_RESTORE, SW_SHOWNORMAL,
+};
+#[cfg(target_os = "windows")]
+use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
+#[cfg(target_os = "windows")]
+use windows::core::PCWSTR;
+
+/// Force window to foreground on Windows by finding it by title
+#[cfg(target_os = "windows")]
+fn force_show_window_by_title(title: &str) {
+    use std::ffi::OsStr;
+    use std::os::windows::ffi::OsStrExt;
+
+    let wide_title: Vec<u16> = OsStr::new(title)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+
+    unsafe {
+        if let Ok(hwnd) = FindWindowW(PCWSTR::null(), PCWSTR(wide_title.as_ptr())) {
+            if !hwnd.is_invalid() {
+                let foreground_hwnd = GetForegroundWindow();
+                let foreground_thread = GetWindowThreadProcessId(foreground_hwnd, None);
+                let current_thread = GetCurrentThreadId();
+
+                let attached = if foreground_thread != current_thread {
+                    let _ = AttachThreadInput(current_thread, foreground_thread, true);
+                    true
+                } else {
+                    false
+                };
+
+                let _ = ShowWindow(hwnd, SW_RESTORE);
+                let _ = ShowWindow(hwnd, SW_SHOWNORMAL);
+                let _ = BringWindowToTop(hwnd);
+                let _ = SetForegroundWindow(hwnd);
+                let _ = SetWindowPos(
+                    hwnd,
+                    HWND_TOP,
+                    0, 0, 0, 0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW
+                );
+
+                if attached {
+                    let _ = AttachThreadInput(current_thread, foreground_thread, false);
+                }
+            }
+        }
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn force_show_window_by_title(_title: &str) {
+    // No-op on non-Windows platforms
+}
 
 pub struct PrinterApp {
     config: AppConfig,
@@ -16,10 +77,9 @@ pub struct PrinterApp {
     settings_endpoint: String,
     settings_interface: String,
     settings_port: String,
-    tray: Option<Arc<Mutex<SystemTray>>>,
+    tray_active: bool,
     should_exit: bool,
     minimized_to_tray: bool,
-    /// Currently selected log entry for preview
     preview_entry: Option<LogEntry>,
 }
 
@@ -29,7 +89,7 @@ impl PrinterApp {
         config: AppConfig,
         print_log: Arc<Mutex<PrintLog>>,
         printer_online: watch::Receiver<bool>,
-        tray: Option<Arc<Mutex<SystemTray>>>,
+        tray_active: bool,
     ) -> Self {
         let settings_vendor_id = config.printer.vendor_id
             .map(|v| format!("0x{:04X}", v))
@@ -55,7 +115,7 @@ impl PrinterApp {
             printer_online,
             last_online_status: false,
             show_settings: false,
-            tray,
+            tray_active,
             should_exit: false,
             minimized_to_tray: false,
             preview_entry: None,
@@ -139,7 +199,6 @@ impl PrinterApp {
                 if log.is_empty() {
                     ui.label(egui::RichText::new("No print jobs yet").italics().weak());
                 } else {
-                    // Collect entries to avoid borrow issues
                     let entries: Vec<_> = log.entries().cloned().collect();
                     drop(log);
 
@@ -153,7 +212,6 @@ impl PrinterApp {
                                     let time_str = entry.timestamp.format("%H:%M:%S").to_string();
                                     ui.label(egui::RichText::new(&time_str).monospace().weak());
 
-                                    // Make the summary clickable if it has commands
                                     if has_commands {
                                         if ui.link(&entry.summary).clicked() {
                                             self.preview_entry = Some(entry.clone());
@@ -165,7 +223,6 @@ impl PrinterApp {
                                     ui.with_layout(
                                         egui::Layout::right_to_left(egui::Align::Center),
                                         |ui| {
-                                            // Show preview icon if commands are available
                                             if has_commands {
                                                 ui.label(egui::RichText::new("\u{1F4C4}").weak());
                                             }
@@ -190,7 +247,6 @@ impl PrinterApp {
                                     );
                                 });
 
-                                // Make the whole row clickable if it has commands
                                 if has_commands && response.response.interact(egui::Sense::click()).clicked() {
                                     self.preview_entry = Some(entry);
                                 }
@@ -385,64 +441,52 @@ impl PrinterApp {
     }
 
     fn handle_tray_events(&mut self, ctx: &egui::Context) {
-        // Poll menu events - this sets atomic flags for exit/show
-        poll_tray_menu_events();
-
-        // Check if show was requested (clears the flag)
         if take_show_requested() {
             self.show_window(ctx);
         }
 
-        // Update tray icon status (needs lock, but non-critical)
-        if let Some(tray) = &self.tray {
-            if let Ok(mut tray) = tray.try_lock() {
-                let is_online = *self.printer_online.borrow();
-                if is_online != self.last_online_status {
-                    tray.update_status(is_online);
+        if self.tray_active {
+            let is_online = *self.printer_online.borrow();
+            if is_online != self.last_online_status {
+                update_tray_status(is_online);
 
-                    if self.minimized_to_tray {
-                        if is_online {
-                            notify_printer_online();
-                        } else {
-                            notify_printer_offline();
-                        }
+                if self.minimized_to_tray {
+                    if is_online {
+                        notify_printer_online();
+                    } else {
+                        notify_printer_offline();
                     }
-
-                    self.last_online_status = is_online;
                 }
+
+                self.last_online_status = is_online;
             }
         }
     }
 
     fn show_window(&mut self, ctx: &egui::Context) {
         self.minimized_to_tray = false;
-        // Order matters: first make visible, then unminimize, then focus
-        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
-        ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+        force_show_window_by_title("REIKA Printer Service");
+        ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(450.0, 500.0)));
+        ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(100.0, 100.0)));
         ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
-        // Request immediate repaint to ensure UI updates
         ctx.request_repaint();
     }
 }
 
 impl eframe::App for PrinterApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // Always keep polling, even when minimized
         ctx.request_repaint_after(std::time::Duration::from_millis(100));
 
         self.handle_tray_events(ctx);
 
-        // Check both our local flag and the atomic exit flag (for reliable exit)
         if self.should_exit || is_exit_requested() {
-            // Force exit the application immediately
             std::process::exit(0);
         }
 
         if ctx.input(|i| i.viewport().close_requested()) {
-            if self.tray.is_some() {
+            if self.tray_active {
                 ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-                // Hide the window completely to system tray
-                ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+                ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
                 self.minimized_to_tray = true;
                 return;
             }

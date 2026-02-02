@@ -12,4 +12,4 @@ pub use notifications::{notify_print_error, notify_print_success, notify_printer
 pub use print_log::{LogEntry, PrintLog};
 pub use receipt_renderer::render_receipt_preview;
 pub use single_instance::{show_already_running_dialog, SingleInstance, SingleInstanceError};
-pub use tray::{is_exit_requested, poll_tray_menu_events, take_show_requested, SystemTray};
+pub use tray::{is_exit_requested, take_show_requested, update_tray_status, SystemTray};
