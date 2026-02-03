@@ -155,6 +155,13 @@ impl ReceiptRenderer {
     pub fn render(&self, ui: &mut Ui) {
         let receipt_width = RECEIPT_WIDTH_CHARS as f32 * CHAR_WIDTH + 32.0;
 
+        // Calculate total height accounting for variable line sizes
+        let total_content_height: f32 = self
+            .lines
+            .iter()
+            .map(|line| LINE_HEIGHT * line.state.size_height.max(1) as f32)
+            .sum();
+
         // Draw receipt background
         let available_rect = ui.available_rect_before_wrap();
         let receipt_rect = Rect::from_min_size(
@@ -162,7 +169,7 @@ impl ReceiptRenderer {
                 available_rect.center().x - receipt_width / 2.0,
                 available_rect.min.y,
             ),
-            Vec2::new(receipt_width, self.lines.len() as f32 * LINE_HEIGHT + 40.0),
+            Vec2::new(receipt_width, total_content_height + 40.0),
         );
 
         ui.painter().rect_filled(
@@ -182,8 +189,9 @@ impl ReceiptRenderer {
         let content_start = receipt_rect.min + Vec2::new(16.0, 20.0);
         let content_width = receipt_width - 32.0;
 
-        for (i, line) in self.lines.iter().enumerate() {
-            let y = content_start.y + (i as f32 * LINE_HEIGHT * line.state.size_height as f32);
+        let mut current_y = content_start.y;
+        for line in self.lines.iter() {
+            let y = current_y;
 
             // Calculate font size based on size multiplier
             let font_size = BASE_FONT_SIZE * line.state.size_height.max(1) as f32;
@@ -237,6 +245,9 @@ impl ReceiptRenderer {
                 FontId::monospace(font_size),
                 text_color,
             );
+
+            // Advance y position by this line's height
+            current_y += LINE_HEIGHT * line.state.size_height.max(1) as f32;
         }
 
         // Reserve the space
