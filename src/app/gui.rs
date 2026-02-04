@@ -77,6 +77,7 @@ pub struct PrinterApp {
     settings_endpoint: String,
     settings_interface: String,
     settings_port: String,
+    settings_logging_enabled: bool,
     tray_active: bool,
     should_exit: bool,
     minimized_to_tray: bool,
@@ -110,6 +111,7 @@ impl PrinterApp {
             settings_endpoint,
             settings_interface,
             settings_port: config.server.port.to_string(),
+            settings_logging_enabled: config.ui.logging_enabled,
             config,
             print_log,
             printer_online,
@@ -383,6 +385,20 @@ impl PrinterApp {
                         ui.end_row();
                     });
 
+                ui.add_space(12.0);
+                ui.separator();
+                ui.add_space(8.0);
+
+                ui.heading("Debug Logging");
+                ui.add_space(8.0);
+
+                ui.checkbox(&mut self.settings_logging_enabled, "Enable debug logging to file");
+                ui.label(
+                    egui::RichText::new("Logs to reika-debug.log next to executable")
+                        .weak()
+                        .small(),
+                );
+
                 ui.add_space(16.0);
                 ui.label(
                     egui::RichText::new("Note: Changes require application restart")
@@ -416,6 +432,7 @@ impl PrinterApp {
                         if let Ok(port) = self.settings_port.parse() {
                             self.config.server.port = port;
                         }
+                        self.config.ui.logging_enabled = self.settings_logging_enabled;
                         let _ = self.config.save();
                         self.show_settings = false;
                     }
@@ -434,6 +451,7 @@ impl PrinterApp {
                             .map(|v| v.to_string())
                             .unwrap_or_default();
                         self.settings_port = self.config.server.port.to_string();
+                        self.settings_logging_enabled = self.config.ui.logging_enabled;
                         self.show_settings = false;
                     }
                 });

@@ -9,8 +9,8 @@ mod server;
 mod services;
 
 use crate::app::{
-    show_already_running_dialog, AppConfig, PrinterApp, PrintLog, SingleInstance,
-    SingleInstanceError, SystemTray,
+    init_file_logging, init_noop_logging, show_already_running_dialog, AppConfig, PrinterApp,
+    PrintLog, SingleInstance, SingleInstanceError, SystemTray,
 };
 use crate::server::run_with_port;
 use crate::services::{PrinterService, UsbConfig};
@@ -33,6 +33,15 @@ fn main() {
     };
 
     let config = AppConfig::load();
+
+    // Initialize logging based on config
+    if config.ui.logging_enabled {
+        if let Err(e) = init_file_logging() {
+            eprintln!("Failed to initialize file logging: {}", e);
+        }
+    } else {
+        init_noop_logging();
+    }
     let print_log = Arc::new(Mutex::new(PrintLog::load(config.ui.max_log_entries)));
 
     let (online_tx, online_rx) = watch::channel(false);

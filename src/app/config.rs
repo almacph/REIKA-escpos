@@ -76,6 +76,8 @@ pub struct ServerConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UiConfig {
     pub max_log_entries: usize,
+    #[serde(default)]
+    pub logging_enabled: bool,
 }
 
 impl Default for AppConfig {
@@ -91,6 +93,7 @@ impl Default for AppConfig {
             server: ServerConfig { port: 55000 },
             ui: UiConfig {
                 max_log_entries: 100,
+                logging_enabled: false,
             },
         }
     }
@@ -107,21 +110,12 @@ impl AppConfig {
 
     pub fn load() -> Self {
         let path = Self::config_path();
-        println!("Config path: {:?}", path);
         if path.exists() {
-            println!("Config file found, loading...");
-            match fs::read_to_string(&path) {
-                Ok(contents) => match toml::from_str(&contents) {
-                    Ok(config) => {
-                        println!("Config loaded successfully");
-                        return config;
-                    }
-                    Err(e) => eprintln!("Failed to parse config: {}", e),
-                },
-                Err(e) => eprintln!("Failed to read config: {}", e),
+            if let Ok(contents) = fs::read_to_string(&path) {
+                if let Ok(config) = toml::from_str(&contents) {
+                    return config;
+                }
             }
-        } else {
-            println!("Config file not found, using defaults");
         }
 
         let config = Self::default();

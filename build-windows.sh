@@ -17,6 +17,15 @@ rustup target add x86_64-pc-windows-gnu 2>/dev/null || true
 cargo build --release --target x86_64-pc-windows-gnu
 
 echo ""
+
+# Create release zip with exe and watchdog
+RELEASE_DIR="target/x86_64-pc-windows-gnu/release"
+cp reika-watchdog.vbs "$RELEASE_DIR/"
+
+cd "$RELEASE_DIR"
+zip -j reika-escpos.zip reika-escpos.exe reika-watchdog.vbs
+cd - > /dev/null
+
 echo "Build complete!"
-echo "Executable: target/x86_64-pc-windows-gnu/release/reika-escpos.exe"
-ls -lh target/x86_64-pc-windows-gnu/release/reika-escpos.exe
+echo "Release package:"
+ls -lh "$RELEASE_DIR/reika-escpos.zip"

@@ -19,8 +19,8 @@ jobs:
         with:
           targets: x86_64-pc-windows-gnu
 
-      - name: Install MinGW
-        run: sudo apt-get update && sudo apt-get install -y mingw-w64
+      - name: Install MinGW and zip
+        run: sudo apt-get update && sudo apt-get install -y mingw-w64 zip
 
       - name: Build Windows executable
         run: chmod +x build-windows.sh && ./build-windows.sh
@@ -29,7 +29,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: reika-escpos-windows
-          path: target/x86_64-pc-windows-gnu/release/reika-escpos.exe
+          path: target/x86_64-pc-windows-gnu/release/reika-escpos.zip
 
   release:
     needs: build
@@ -49,5 +49,5 @@ jobs:
         with:
           tag_name: build-${{ github.run_number }}
           name: Build ${{ github.run_number }}
-          files: reika-escpos.exe
+          files: reika-escpos.zip
           generate_release_notes: true

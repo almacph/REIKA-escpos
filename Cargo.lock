@@ -3376,6 +3376,7 @@ dependencies = [
  "egui",
  "env_logger",
  "escpos",
+ "log",
  "notify-rust",
  "rusb",
  "serde",

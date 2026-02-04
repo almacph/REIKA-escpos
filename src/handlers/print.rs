@@ -20,15 +20,6 @@ pub async fn handle_status(service: PrinterService) -> Result<impl Reply, Infall
         )
     };
 
-    println!(
-        "{} sent!",
-        if is_connected {
-            "Connected"
-        } else {
-            "Not connected"
-        }
-    );
-
     Ok(warp::reply::with_status(json(&response), StatusCode::OK))
 }
 
@@ -68,16 +59,9 @@ pub async fn handle_print(
     print_log: Arc<Mutex<PrintLog>>,
     body: serde_json::Value,
 ) -> Result<impl Reply, Infallible> {
-    let json_string = serde_json::to_string(&body).unwrap_or_default();
-    println!("Parsing a print request! {:#?}", json_string);
-
     let commands: Commands = match serde_json::from_value(body) {
-        Ok(c) => {
-            println!("{:?}", c);
-            c
-        }
+        Ok(c) => c,
         Err(e) => {
-            println!("Failed to parse the JSON for the previous print request!");
             let error_msg = format!("Invalid input: {}", e);
             if let Ok(mut log) = print_log.lock() {
                 log.add_error("Print job".to_string(), error_msg.clone());
