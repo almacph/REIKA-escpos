@@ -1,6 +1,7 @@
 use std::future::Future;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use escpos::errors::PrinterError;
 use escpos::printer::Printer;
@@ -12,6 +13,19 @@ use tokio::time::sleep;
 use crate::error::AppError;
 use crate::models::{Command, Commands, JustifyMode, PrinterTestSchema, UnderlineMode};
 use super::usb_driver::{CustomUsbDriver, UsbConfig};
+
+// Global counter for generating unique print IDs
+static PRINT_COUNTER: AtomicU32 = AtomicU32::new(0);
+
+/// Generate a unique print ID for tracking operations
+fn generate_print_id() -> String {
+    let counter = PRINT_COUNTER.fetch_add(1, Ordering::SeqCst);
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u32;
+    format!("{:04x}{:04x}", timestamp & 0xFFFF, counter & 0xFFFF)
+}
 
 #[derive(Clone)]
 pub struct PrinterService {
@@ -99,41 +113,43 @@ impl PrinterService {
     }
     async fn with_retry<F, Fut, T>(&self, f: F) -> Result<T, AppError>
     where
-        F: Fn(CustomUsbDriver) -> Fut,
+        F: Fn(CustomUsbDriver, String) -> Fut,
         Fut: Future<Output = Result<T, PrinterError>>,
     {
         let start = Instant::now();
         let mut attempt = 0u32;
+        let print_id = generate_print_id();
 
         // Try with existing connection first - don't refresh unless needed
         // This avoids race conditions from constantly closing/reopening USB
-        log::info!("with_retry: Starting print operation...");
+        log::info!("[print_id={}] Starting print operation...", print_id);
 
         loop {
             attempt += 1;
             let op_start = Instant::now();
-            log::info!("with_retry: Attempt #{} starting...", attempt);
+            log::info!("[print_id={}] Attempt #{} starting...", print_id, attempt);
 
             let driver = self.driver.lock().await.clone();
-            match f(driver).await {
+            match f(driver, print_id.clone()).await {
                 Ok(result) => {
                     log::info!(
-                        "with_retry: SUCCESS on attempt #{} in {:?} (total {:?})",
+                        "[PRINT_SUMMARY] print_id={} | status=OK | attempts={} | duration={:?}",
+                        print_id,
                         attempt,
-                        op_start.elapsed(),
                         start.elapsed()
                     );
                     return Ok(result);
                 }
                 Err(e) => {
                     log::error!(
-                        "with_retry: Attempt #{} FAILED after {:?}: {:?}",
+                        "[print_id={}] Attempt #{} FAILED after {:?}: {:?}",
+                        print_id,
                         attempt,
                         op_start.elapsed(),
                         e
                     );
                     // Only reconnect after failure
-                    log::info!("with_retry: Reconnecting before retry...");
+                    log::info!("[print_id={}] Reconnecting before retry...", print_id);
                     self.reconnect().await;
                 }
             }
@@ -178,9 +194,9 @@ impl PrinterService {
     }
 
     pub async fn execute_commands(&self, commands: Commands) -> Result<(), AppError> {
-        self.with_retry(|driver| {
+        self.with_retry(|driver, print_id| {
             let commands_clone = commands.commands.clone();
-            async move { Self::execute_commands_inner(driver, commands_clone).await }
+            async move { Self::execute_commands_inner(driver, commands_clone, print_id).await }
         })
         .await
     }
@@ -188,10 +204,11 @@ impl PrinterService {
     async fn execute_commands_inner(
         driver: CustomUsbDriver,
         commands: Vec<Command>,
+        print_id: String,
     ) -> Result<(), PrinterError> {
         let start = Instant::now();
         let cmd_count = commands.len();
-        log::info!("execute_commands: Starting {} commands...", cmd_count);
+        log::info!("[print_id={}] execute_commands: Starting {} commands...", print_id, cmd_count);
 
         let mut printer = Printer::new(driver, Protocol::default(), None);
 
@@ -309,13 +326,14 @@ impl PrinterService {
             }
         }
 
-        log::debug!("execute_commands: Sending final print_cut...");
+        log::debug!("[print_id={}] execute_commands: Sending final print_cut...", print_id);
         let cut_start = Instant::now();
         printer.print_cut()?;
-        log::debug!("execute_commands: print_cut OK in {:?}", cut_start.elapsed());
+        log::debug!("[print_id={}] execute_commands: print_cut OK in {:?}", print_id, cut_start.elapsed());
 
         log::info!(
-            "execute_commands: COMPLETE - {} commands in {:?}",
+            "[print_id={}] execute_commands: COMPLETE - {} commands in {:?}",
+            print_id,
             cmd_count,
             start.elapsed()
         );
@@ -323,9 +341,9 @@ impl PrinterService {
     }
 
     pub async fn print_test(&self, request: PrinterTestSchema) -> Result<(), AppError> {
-        self.with_retry(|driver| {
+        self.with_retry(|driver, print_id| {
             let request_clone = request.clone();
-            async move { Self::print_test_inner(driver, request_clone).await }
+            async move { Self::print_test_inner(driver, request_clone, print_id).await }
         })
         .await
     }
@@ -333,6 +351,7 @@ impl PrinterService {
     async fn print_test_inner(
         driver: CustomUsbDriver,
         request: PrinterTestSchema,
+        print_id: String,
     ) -> Result<(), PrinterError> {
         if request.test_page() {
             let test_commands = vec![
@@ -352,7 +371,7 @@ impl PrinterService {
                 Command::Writeln("Hello world - Normal".to_string()),
                 Command::PrintCut(None),
             ];
-            Self::execute_commands_inner(driver.clone(), test_commands).await?;
+            Self::execute_commands_inner(driver.clone(), test_commands, print_id.clone()).await?;
         }
 
         if !request.test_line().is_empty() {
@@ -360,7 +379,7 @@ impl PrinterService {
                 Command::Writeln(request.test_line().to_string()),
                 Command::PrintCut(None),
             ];
-            Self::execute_commands_inner(driver, line_commands).await?;
+            Self::execute_commands_inner(driver, line_commands, print_id).await?;
         }
 
         Ok(())

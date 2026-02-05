@@ -113,6 +113,16 @@ impl CustomUsbDriver {
                     PrinterError::Io(e.to_string())
                 })?;
 
+                // Clear any stale endpoint state - critical after device power cycles
+                // This resets data toggle bits and clears any stall conditions
+                if let Err(e) = device_handle.clear_halt(output_endpoint) {
+                    log::debug!(
+                        "clear_halt on endpoint 0x{:02X} returned: {} (non-fatal)",
+                        output_endpoint,
+                        e
+                    );
+                }
+
                 log::info!(
                     "USB device opened successfully: VID=0x{:04X}, PID=0x{:04X}, out_ep=0x{:02X}, in_ep=0x{:02X}",
                     config.vendor_id,
@@ -243,6 +253,23 @@ impl Driver for CustomUsbDriver {
 
         match &result {
             Ok(bytes_written) => {
+                if *bytes_written != data.len() {
+                    // CRITICAL: Partial or zero writes indicate USB connection is broken
+                    // This commonly happens after device power cycle while host maintains stale handle
+                    log::error!(
+                        "[PRINT_FAILURE] USB partial write: wrote {}/{} bytes | endpoint=0x{:02X} | elapsed={:?}",
+                        bytes_written,
+                        data.len(),
+                        self.output_endpoint,
+                        write_start.elapsed()
+                    );
+                    return Err(PrinterError::Io(format!(
+                        "USB write incomplete: expected {} bytes, wrote {} bytes to endpoint 0x{:02X}",
+                        data.len(),
+                        bytes_written,
+                        self.output_endpoint
+                    )));
+                }
                 log::info!(
                     "USB write OK: {}/{} bytes in {:?} (total {:?})",
                     bytes_written,
@@ -250,13 +277,6 @@ impl Driver for CustomUsbDriver {
                     write_start.elapsed(),
                     start.elapsed()
                 );
-                if *bytes_written != data.len() {
-                    log::warn!(
-                        "USB partial write: expected {} bytes, wrote {} bytes",
-                        data.len(),
-                        bytes_written
-                    );
-                }
             }
             Err(e) => {
                 log::error!(
