@@ -196,7 +196,10 @@ impl PrinterApp {
                 ui.label(egui::RichText::new("Click an entry to preview the receipt").weak().small());
                 ui.add_space(4.0);
 
-                let log = self.print_log.lock().unwrap();
+                let Ok(log) = self.print_log.lock() else {
+                    ui.label(egui::RichText::new("Log unavailable").italics().weak());
+                    return;
+                };
 
                 if log.is_empty() {
                     ui.label(egui::RichText::new("No print jobs yet").italics().weak());

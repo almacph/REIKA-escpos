@@ -1,4 +1,4 @@
-use log::{Level, LevelFilter, Metadata, Record, SetLoggerError};
+use log::{Level, LevelFilter, Metadata, Record};
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::PathBuf;
@@ -70,7 +70,7 @@ pub fn log_path() -> PathBuf {
 
 /// Initialize file logging. Creates/truncates the log file.
 /// Returns Ok(()) if logging was initialized, Err if it failed.
-pub fn init_file_logging() -> Result<(), SetLoggerError> {
+pub fn init_file_logging() -> Result<(), Box<dyn std::error::Error>> {
     let path = log_path();
 
     // Create or truncate the log file
@@ -79,7 +79,10 @@ pub fn init_file_logging() -> Result<(), SetLoggerError> {
         .create(true)
         .truncate(true)
         .open(&path)
-        .expect("Failed to create log file");
+        .map_err(|e| {
+            eprintln!("Failed to create log file at {:?}: {}", path, e);
+            e
+        })?;
 
     let logger = FileLogger::new(file);
 
