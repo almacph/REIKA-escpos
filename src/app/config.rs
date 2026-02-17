@@ -9,6 +9,8 @@ pub struct AppConfig {
     pub printer: PrinterConfig,
     pub server: ServerConfig,
     pub ui: UiConfig,
+    #[serde(default)]
+    pub reika: ReikaConfig,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -80,6 +82,27 @@ pub struct UiConfig {
     pub logging_enabled: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReikaConfig {
+    #[serde(default)]
+    pub api_key: String,
+    #[serde(default = "default_reika_server_url")]
+    pub server_url: String,
+}
+
+fn default_reika_server_url() -> String {
+    "https://reika.local".to_string()
+}
+
+impl Default for ReikaConfig {
+    fn default() -> Self {
+        Self {
+            api_key: String::new(),
+            server_url: default_reika_server_url(),
+        }
+    }
+}
+
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
@@ -95,6 +118,7 @@ impl Default for AppConfig {
                 max_log_entries: 100,
                 logging_enabled: false,
             },
+            reika: ReikaConfig::default(),
         }
     }
 }
