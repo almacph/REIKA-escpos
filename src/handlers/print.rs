@@ -101,3 +101,38 @@ pub async fn handle_print(
         }
     }
 }
+
+pub async fn handle_reprint(
+    service: PrinterService,
+    body: serde_json::Value,
+) -> Result<impl Reply, Infallible> {
+    let commands: Commands = match serde_json::from_value(body) {
+        Ok(c) => c,
+        Err(e) => {
+            let error_msg = format!("Invalid input: {}", e);
+            return Ok(warp::reply::with_status(
+                json(&StatusResponse::error(false, error_msg)),
+                StatusCode::BAD_REQUEST,
+            ));
+        }
+    };
+
+    match service.execute_reprint_commands(commands).await {
+        Ok(()) => {
+            notify_print_success("Reprint");
+            Ok(warp::reply::with_status(
+                json(&StatusResponse::success()),
+                StatusCode::OK,
+            ))
+        }
+        Err(e) => {
+            let status = e.status_code();
+            let error_msg = e.to_string();
+            notify_print_error("Reprint", &error_msg);
+            Ok(warp::reply::with_status(
+                json(&e.to_response(false)),
+                status,
+            ))
+        }
+    }
+}

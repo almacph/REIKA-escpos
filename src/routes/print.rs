@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 use warp::Filter;
 
 use crate::app::PrintLog;
-use crate::handlers::{handle_print, handle_status, handle_test_print};
+use crate::handlers::{handle_print, handle_reprint, handle_status, handle_test_print};
 use crate::models::PrinterTestSchema;
 use crate::services::PrinterService;
 
@@ -64,11 +64,26 @@ pub fn print_route(
         )
 }
 
+pub fn reprint_route(
+    service: PrinterService,
+) -> impl Filter<Extract = (impl warp::Reply,), Error = warp::Rejection> + Clone {
+    warp::path!("print" / "reprint")
+        .and(warp::post())
+        .and(with_service(service))
+        .and(warp::body::json())
+        .and_then(
+            |service: PrinterService, body: serde_json::Value| async move {
+                handle_reprint(service, body).await
+            },
+        )
+}
+
 pub fn print_routes(
     service: PrinterService,
     print_log: Arc<Mutex<PrintLog>>,
 ) -> impl Filter<Extract = (impl warp::Reply,), Error = warp::Rejection> + Clone {
     status_route(service.clone())
         .or(test_print_route(service.clone(), print_log.clone()))
+        .or(reprint_route(service.clone()))
         .or(print_route(service, print_log))
 }

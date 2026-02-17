@@ -12,6 +12,8 @@ use tokio::time::sleep;
 
 use crate::error::AppError;
 use crate::models::{Command, Commands, JustifyMode, PrinterTestSchema, UnderlineMode};
+use super::reprint::inject_reprint_markers;
+use super::sensor_reporter::SensorEvent;
 use super::usb_driver::{CustomUsbDriver, UsbConfig};
 
 // Global counter for generating unique print IDs
@@ -32,6 +34,7 @@ pub struct PrinterService {
     driver: Arc<Mutex<CustomUsbDriver>>,
     usb_config: UsbConfig,
     status_tx: Option<watch::Sender<bool>>,
+    sensor_tx: Option<tokio::sync::mpsc::Sender<SensorEvent>>,
 }
 
 impl PrinterService {
@@ -40,12 +43,24 @@ impl PrinterService {
             driver: Arc::new(Mutex::new(driver)),
             usb_config,
             status_tx: None,
+            sensor_tx: None,
         }
     }
 
     pub fn with_status(mut self, status_tx: watch::Sender<bool>) -> Self {
         self.status_tx = Some(status_tx);
         self
+    }
+
+    pub fn with_sensor(mut self, sensor_tx: tokio::sync::mpsc::Sender<SensorEvent>) -> Self {
+        self.sensor_tx = Some(sensor_tx);
+        self
+    }
+
+    fn send_sensor_event(&self, event: SensorEvent) {
+        if let Some(tx) = &self.sensor_tx {
+            let _ = tx.try_send(event);
+        }
     }
 
     fn update_status(&self, online: bool) {
@@ -105,7 +120,10 @@ impl PrinterService {
         let start = Instant::now();
         self.update_status(false);
         log::info!("reconnect: Starting USB reconnection...");
-        let new_driver = Self::initialize_device_with_config(&self.usb_config).await;
+        let mut new_driver = Self::initialize_device_with_config(&self.usb_config).await;
+        if let Some(tx) = &self.sensor_tx {
+            new_driver = new_driver.with_sensor(tx.clone());
+        }
         let mut driver = self.driver.lock().await;
         *driver = new_driver;
         self.update_status(true);
@@ -148,6 +166,9 @@ impl PrinterService {
                         op_start.elapsed(),
                         e
                     );
+                    self.send_sensor_event(SensorEvent::PrintFail(
+                        format!("print_id={} attempt={} error={:?}", print_id, attempt, e)
+                    ));
                     // Only reconnect after failure
                     log::info!("[print_id={}] Reconnecting before retry...", print_id);
                     self.reconnect().await;
@@ -199,6 +220,108 @@ impl PrinterService {
             async move { Self::execute_commands_inner(driver, commands_clone, print_id).await }
         })
         .await
+    }
+
+    /// Execute a reprint: injects anti-fraud markers at top, middle, and bottom,
+    /// then prints with retry. Does NOT log to print log (not a new transaction).
+    pub async fn execute_reprint_commands(&self, commands: Commands) -> Result<(), AppError> {
+        let marked_commands = inject_reprint_markers(commands.commands);
+        self.with_retry(|driver, print_id| {
+            let cmds = marked_commands.clone();
+            async move { Self::execute_reprint_inner(driver, cmds, print_id).await }
+        })
+        .await
+    }
+
+    async fn execute_reprint_inner(
+        driver: CustomUsbDriver,
+        commands: Vec<Command>,
+        print_id: String,
+    ) -> Result<(), PrinterError> {
+        let start = Instant::now();
+        let cmd_count = commands.len();
+        log::info!(
+            "[print_id={}] execute_reprint: Starting {} commands (with markers)...",
+            print_id,
+            cmd_count
+        );
+
+        let mut printer = Printer::new(driver, Protocol::default(), None);
+
+        // The injected command stream already starts with Init, so we iterate directly
+        for (idx, command) in commands.iter().enumerate() {
+            let cmd_start = Instant::now();
+            let result = match command {
+                Command::Print(_) => printer.print(),
+                Command::Init(_) => printer.init(),
+                Command::Reset(_) => printer.reset(),
+                Command::Cut(_) => printer.cut(),
+                Command::PartialCut(_) => printer.partial_cut(),
+                Command::PrintCut(_) => printer.print_cut(),
+                Command::PageCode(page_code) => printer.page_code(page_code.clone().into()),
+                Command::CharacterSet(char_set) => printer.character_set(char_set.clone().into()),
+                Command::Bold(enabled) => printer.bold(*enabled),
+                Command::Underline(mode) => printer.underline(mode.clone().into()),
+                Command::DoubleStrike(enabled) => printer.double_strike(*enabled),
+                Command::Font(font) => printer.font(font.clone().into()),
+                Command::Flip(enabled) => printer.flip(*enabled),
+                Command::Justify(mode) => printer.justify(mode.clone().into()),
+                Command::Reverse(enabled) => printer.reverse(*enabled),
+                Command::Size((width, height)) => printer.size(*width, *height),
+                Command::ResetSize(_) => printer.reset_size(),
+                Command::Smoothing(enabled) => printer.smoothing(*enabled),
+                Command::Feed(_) => printer.feed(),
+                Command::Feeds(lines) => printer.feeds(*lines),
+                Command::LineSpacing(value) => printer.line_spacing(*value),
+                Command::ResetLineSpacing(_) => printer.reset_line_spacing(),
+                Command::UpsideDown(enabled) => printer.upside_down(*enabled),
+                Command::CashDrawer(pin) => printer.cash_drawer(pin.clone().into()),
+                Command::Write(text) => printer.write(text),
+                Command::Writeln(text) => printer.writeln(text),
+                Command::Ean13(data) => printer.ean13(data),
+                Command::Ean8(data) => printer.ean8(data),
+                Command::Upca(data) => printer.upca(data),
+                Command::Upce(data) => printer.upce(data),
+                Command::Code39(data) => printer.code39(data),
+                Command::Codabar(data) => printer.codabar(data),
+                Command::Itf(data) => printer.itf(data),
+                Command::Qrcode(data) => printer.qrcode(data),
+                Command::GS1Databar2d(data) => printer.gs1_databar_2d(data),
+                Command::Pdf417(data) => printer.pdf417(data),
+                Command::MaxiCode(data) => printer.maxi_code(data),
+                Command::DataMatrix(data) => printer.data_matrix(data),
+                Command::Aztec(data) => printer.aztec(data),
+            };
+
+            match result {
+                Ok(_) => {
+                    log::debug!(
+                        "execute_reprint: [{}/{}] OK in {:?}",
+                        idx + 1,
+                        cmd_count,
+                        cmd_start.elapsed()
+                    );
+                }
+                Err(e) => {
+                    log::error!(
+                        "execute_reprint: [{}/{}] FAILED after {:?}: {:?}",
+                        idx + 1,
+                        cmd_count,
+                        cmd_start.elapsed(),
+                        e
+                    );
+                    return Err(e);
+                }
+            }
+        }
+
+        log::info!(
+            "[print_id={}] execute_reprint: COMPLETE - {} commands in {:?}",
+            print_id,
+            cmd_count,
+            start.elapsed()
+        );
+        Ok(())
     }
 
     async fn execute_commands_inner(
