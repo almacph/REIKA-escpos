@@ -1,7 +1,10 @@
 use crate::app::print_log::LogStatus;
-use crate::app::{is_exit_requested, notify_printer_offline, notify_printer_online, render_receipt_preview, take_show_requested, update_tray_status, AppConfig, LogEntry, PrintLog, PrinterPreset};
+use crate::app::{is_exit_requested, notify_print_error, notify_print_success, notify_printer_offline, notify_printer_online, render_receipt_preview, take_show_requested, update_tray_status, AppConfig, LogEntry, PrintLog, PrinterPreset};
+use crate::models::Command;
 use eframe::egui;
 use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc as std_mpsc;
 use tokio::sync::watch;
 
 #[cfg(target_os = "windows")]
@@ -78,10 +81,15 @@ pub struct PrinterApp {
     settings_interface: String,
     settings_port: String,
     settings_logging_enabled: bool,
+    settings_reika_api_key: String,
+    settings_reika_server_url: String,
     tray_active: bool,
     should_exit: bool,
     minimized_to_tray: bool,
     preview_entry: Option<LogEntry>,
+    reprint_tx: std_mpsc::Sender<Vec<Command>>,
+    reprint_in_progress: Arc<AtomicBool>,
+    reprint_result: Arc<Mutex<Option<Result<(), String>>>>,
 }
 
 impl PrinterApp {
@@ -91,6 +99,9 @@ impl PrinterApp {
         print_log: Arc<Mutex<PrintLog>>,
         printer_online: watch::Receiver<bool>,
         tray_active: bool,
+        reprint_tx: std_mpsc::Sender<Vec<Command>>,
+        reprint_in_progress: Arc<AtomicBool>,
+        reprint_result: Arc<Mutex<Option<Result<(), String>>>>,
     ) -> Self {
         let settings_vendor_id = config.printer.vendor_id
             .map(|v| format!("0x{:04X}", v))
@@ -112,6 +123,8 @@ impl PrinterApp {
             settings_interface,
             settings_port: config.server.port.to_string(),
             settings_logging_enabled: config.ui.logging_enabled,
+            settings_reika_api_key: config.reika.api_key.clone(),
+            settings_reika_server_url: config.reika.server_url.clone(),
             config,
             print_log,
             printer_online,
@@ -121,6 +134,9 @@ impl PrinterApp {
             should_exit: false,
             minimized_to_tray: false,
             preview_entry: None,
+            reprint_tx,
+            reprint_in_progress,
+            reprint_result,
         }
     }
 
@@ -296,6 +312,37 @@ impl PrinterApp {
                         }
                     }
 
+                    // Reprint button
+                    if entry.commands.is_some() {
+                        ui.add_space(4.0);
+                        let is_online = *self.printer_online.borrow();
+                        let is_reprinting = self.reprint_in_progress.load(Ordering::SeqCst);
+                        let can_reprint = is_online && !is_reprinting;
+
+                        let button_text = if is_reprinting {
+                            "Reprinting..."
+                        } else {
+                            "Reprint"
+                        };
+
+                        let button = egui::Button::new(button_text);
+                        if ui.add_enabled(can_reprint, button).clicked() {
+                            if let Some(cmds) = &entry.commands {
+                                self.reprint_in_progress.store(true, Ordering::SeqCst);
+                                let _ = self.reprint_tx.send(cmds.clone());
+                            }
+                        }
+
+                        if !is_online && !is_reprinting {
+                            ui.label(
+                                egui::RichText::new("Printer offline")
+                                    .weak()
+                                    .small()
+                                    .color(egui::Color32::from_rgb(200, 100, 100)),
+                            );
+                        }
+                    }
+
                     ui.add_space(8.0);
                     ui.separator();
                     ui.add_space(8.0);
@@ -311,6 +358,21 @@ impl PrinterApp {
 
             if !open {
                 self.preview_entry = None;
+            }
+        }
+    }
+
+    fn poll_reprint_result(&mut self) {
+        if let Ok(mut result) = self.reprint_result.lock() {
+            if let Some(res) = result.take() {
+                match res {
+                    Ok(()) => {
+                        notify_print_success("Reprint");
+                    }
+                    Err(e) => {
+                        notify_print_error("Reprint", &e);
+                    }
+                }
             }
         }
     }
@@ -392,6 +454,32 @@ impl PrinterApp {
                 ui.separator();
                 ui.add_space(8.0);
 
+                ui.heading("REIKA Integration");
+                ui.add_space(8.0);
+
+                egui::Grid::new("reika_settings_grid")
+                    .num_columns(2)
+                    .spacing([10.0, 8.0])
+                    .show(ui, |ui| {
+                        ui.label("API Key:");
+                        ui.text_edit_singleline(&mut self.settings_reika_api_key);
+                        ui.end_row();
+
+                        ui.label("Server URL:");
+                        ui.text_edit_singleline(&mut self.settings_reika_server_url);
+                        ui.end_row();
+                    });
+
+                ui.label(
+                    egui::RichText::new("Sensor health reporting to REIKA dashboard")
+                        .weak()
+                        .small(),
+                );
+
+                ui.add_space(12.0);
+                ui.separator();
+                ui.add_space(8.0);
+
                 ui.heading("Debug Logging");
                 ui.add_space(8.0);
 
@@ -436,6 +524,8 @@ impl PrinterApp {
                             self.config.server.port = port;
                         }
                         self.config.ui.logging_enabled = self.settings_logging_enabled;
+                        self.config.reika.api_key = self.settings_reika_api_key.clone();
+                        self.config.reika.server_url = self.settings_reika_server_url.clone();
                         let _ = self.config.save();
                         self.show_settings = false;
                     }
@@ -455,6 +545,8 @@ impl PrinterApp {
                             .unwrap_or_default();
                         self.settings_port = self.config.server.port.to_string();
                         self.settings_logging_enabled = self.config.ui.logging_enabled;
+                        self.settings_reika_api_key = self.config.reika.api_key.clone();
+                        self.settings_reika_server_url = self.config.reika.server_url.clone();
                         self.show_settings = false;
                     }
                 });
@@ -499,6 +591,7 @@ impl eframe::App for PrinterApp {
         ctx.request_repaint_after(std::time::Duration::from_millis(100));
 
         self.handle_tray_events(ctx);
+        self.poll_reprint_result();
 
         if self.should_exit || is_exit_requested() {
             std::process::exit(0);
