@@ -3,6 +3,7 @@ use escpos::errors::{PrinterError, Result};
 use rusb::{Context, DeviceHandle, Direction, TransferType, UsbContext};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use super::sensor_reporter::SensorEvent;
 
 const DEFAULT_TIMEOUT_SECONDS: u64 = 5;
 
@@ -14,6 +15,7 @@ pub struct CustomUsbDriver {
     input_endpoint: u8,
     device: Arc<Mutex<DeviceHandle<Context>>>,
     timeout: Duration,
+    sensor_tx: Option<tokio::sync::mpsc::Sender<SensorEvent>>,
 }
 
 #[derive(Clone, Debug)]
@@ -137,6 +139,7 @@ impl CustomUsbDriver {
                     input_endpoint,
                     device: Arc::new(Mutex::new(device_handle)),
                     timeout: Duration::from_secs(DEFAULT_TIMEOUT_SECONDS),
+                    sensor_tx: None,
                 });
             }
         }
@@ -147,6 +150,17 @@ impl CustomUsbDriver {
             config.product_id
         );
         Err(PrinterError::Io("USB device not found".to_string()))
+    }
+
+    pub fn with_sensor(mut self, sensor_tx: tokio::sync::mpsc::Sender<SensorEvent>) -> Self {
+        self.sensor_tx = Some(sensor_tx);
+        self
+    }
+
+    fn send_sensor_event(&self, event: SensorEvent) {
+        if let Some(tx) = &self.sensor_tx {
+            let _ = tx.try_send(event);
+        }
     }
 
     fn print_device_info(config_descriptor: &rusb::ConfigDescriptor) {
@@ -256,13 +270,18 @@ impl Driver for CustomUsbDriver {
                 if *bytes_written != data.len() {
                     // CRITICAL: Partial or zero writes indicate USB connection is broken
                     // This commonly happens after device power cycle while host maintains stale handle
-                    log::error!(
-                        "[PRINT_FAILURE] USB partial write: wrote {}/{} bytes | endpoint=0x{:02X} | elapsed={:?}",
+                    let msg = format!(
+                        "USB partial write: wrote {}/{} bytes to endpoint 0x{:02X}",
                         bytes_written,
                         data.len(),
-                        self.output_endpoint,
+                        self.output_endpoint
+                    );
+                    log::error!(
+                        "[PRINT_FAILURE] {} | elapsed={:?}",
+                        msg,
                         write_start.elapsed()
                     );
+                    self.send_sensor_event(SensorEvent::UsbError(msg.clone()));
                     return Err(PrinterError::Io(format!(
                         "USB write incomplete: expected {} bytes, wrote {} bytes to endpoint 0x{:02X}",
                         data.len(),
@@ -286,6 +305,9 @@ impl Driver for CustomUsbDriver {
                     e,
                     e
                 );
+                self.send_sensor_event(SensorEvent::UsbError(
+                    format!("USB write failed to endpoint 0x{:02X}: {}", self.output_endpoint, e)
+                ));
             }
         }
 
