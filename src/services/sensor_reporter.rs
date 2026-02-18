@@ -96,12 +96,17 @@ impl SensorReporter {
     ) {
         log::info!("SensorReporter: Starting main loop");
 
-        let heartbeat_interval = Duration::from_secs(60);
+        // Use interval instead of sleep so the timer is NOT reset when other
+        // select! branches fire. sleep() inside select! gets dropped and
+        // recreated each iteration, which caused heartbeats to never fire
+        // when the watch channel was active.
+        let mut heartbeat = tokio::time::interval(Duration::from_secs(60));
+        heartbeat.tick().await; // consume the immediate first tick
 
         loop {
             tokio::select! {
-                // Heartbeat timer
-                _ = tokio::time::sleep(heartbeat_interval) => {
+                // Heartbeat timer - ticks every 60s regardless of other branches
+                _ = heartbeat.tick() => {
                     self.report(&self.current_state.clone()).await;
                 }
 
