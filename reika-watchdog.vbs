@@ -1,6 +1,10 @@
 ' REIKA Printer Service watchdog. Runs in the interactive user's session.
 Option Explicit
 Dim shell, fso, scriptPath, exePath, stateRoot, logPath, failures, lastRestart
+If HasArgument("--self-test") Then
+  RunSelfTest
+  WScript.Quit 0
+End If
 Set shell = CreateObject("WScript.Shell")
 Set fso = CreateObject("Scripting.FileSystemObject")
 scriptPath = fso.GetParentFolderName(WScript.ScriptFullName)
@@ -61,8 +65,20 @@ Function LivenessResult(expectedPath)
   http.Send
   status = http.Status
   body = LCase(http.ResponseText)
-  If Err.Number <> 0 Then LivenessResult = "port_or_http_error" ElseIf status <> 200 Then LivenessResult = "health_status_" & status ElseIf InStr(body, "healthy") = 0 And InStr(body, "service") = 0 Then LivenessResult = "health_body_invalid" Else LivenessResult = "healthy"
+  LivenessResult = LivenessDecision(Err.Number, status, body)
   On Error GoTo 0
+End Function
+
+Function LivenessDecision(errorNumber, status, body)
+  If errorNumber <> 0 Then
+    LivenessDecision = "port_or_http_error"
+  ElseIf status <> 200 Then
+    LivenessDecision = "health_status_" & status
+  ElseIf InStr(body, "healthy") = 0 And InStr(body, "service") = 0 Then
+    LivenessDecision = "health_body_invalid"
+  Else
+    LivenessDecision = "healthy"
+  End If
 End Function
 
 Function ProcessCount(expectedPath)
@@ -106,13 +122,44 @@ Sub LogEvent(kind, count, health, decision)
   Dim folder, stream, line
   folder = fso.GetParentFolderName(logPath)
   If Not fso.FolderExists(folder) Then On Error Resume Next: fso.CreateFolder folder: On Error GoTo 0
-  line = "{""time"":""" & Replace(Replace(CStr(Now), """", "'"), " ", "T") & """,""event"":""" & kind & """,""process_count"":" & count & ",""health"":""" & health & """,""decision"":""" & decision & """}"
+  line = JsonLogLine(CStr(Now), kind, count, health, decision)
   On Error Resume Next
   Set stream = fso.OpenTextFile(logPath, 8, True)
   stream.WriteLine line
   stream.Close
   If fso.FileExists(logPath) Then If fso.GetFile(logPath).Size > 262144 Then fso.DeleteFile logPath, True
   On Error GoTo 0
+End Sub
+
+Function JsonLogLine(timestampValue, kind, count, health, decision)
+  JsonLogLine = "{""time"":""" & Replace(Replace(CStr(timestampValue), """", "'"), " ", "T") & """,""event"":""" & kind & """,""process_count"":" & count & ",""health"":""" & health & """,""decision"":""" & decision & """}"
+End Function
+
+Function HasArgument(value)
+  Dim argument
+  HasArgument = False
+  For Each argument In WScript.Arguments
+    If LCase(CStr(argument)) = LCase(value) Then
+      HasArgument = True
+      Exit Function
+    End If
+  Next
+End Function
+
+Sub RunSelfTest()
+  AssertEqual "port_or_http_error", LivenessDecision(5, 0, ""), "HTTP error classification"
+  AssertEqual "health_status_503", LivenessDecision(0, 503, "service unavailable"), "HTTP status classification"
+  AssertEqual "health_body_invalid", LivenessDecision(0, 200, "printer offline"), "health body classification"
+  AssertEqual "healthy", LivenessDecision(0, 200, "{""healthy"":true}"), "healthy body classification"
+  AssertEqual "{""time"":""2026-10-19T12:34:56"",""event"":""self_test"",""process_count"":0,""health"":""healthy"",""decision"":""none""}", JsonLogLine("2026-10-19 12:34:56", "self_test", 0, "healthy", "none"), "JSON log serialization"
+  WScript.Echo "reika-watchdog.vbs self-test passed"
+End Sub
+
+Sub AssertEqual(expected, actual, label)
+  If CStr(actual) <> CStr(expected) Then
+    WScript.Echo "self-test failed: " & label & " (expected '" & expected & "', got '" & actual & "')"
+    WScript.Quit 1
+  End If
 End Sub
 
 Function MaintenanceLeaseActive(root)

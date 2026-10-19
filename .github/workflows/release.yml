@@ -45,6 +45,8 @@ jobs:
           components: rustfmt, clippy
       - name: Run native Windows tests
         run: cargo test --locked
+      - name: Validate watchdog VBScript on Windows
+        run: cscript //nologo reika-watchdog.vbs --self-test
 
   build:
     needs: [checks, windows-tests]
