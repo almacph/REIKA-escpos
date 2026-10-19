@@ -153,6 +153,24 @@ mod reprint_action_tests {
     }
 
     #[test]
+    fn closed_reprint_listener_clears_progress_and_reports_error() {
+        let (tx, rx, progress, result) = setup();
+        drop(rx);
+
+        assert!(!request_reprint(
+            &[Command::Writeln("receipt".into())],
+            &tx,
+            &progress,
+            &result,
+        ));
+        assert!(!progress.load(Ordering::SeqCst));
+        assert!(matches!(
+            &*result.lock().unwrap(),
+            Some(Err(message)) if message == "Reprint service is unavailable"
+        ));
+    }
+
+    #[test]
     fn watchdog_lease_is_removed_when_maintenance_setup_fails_or_finishes() {
         let root = std::env::temp_dir().join(format!("reika-gui-lease-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
@@ -172,6 +190,7 @@ pub struct PrinterApp {
     print_log: Arc<Mutex<PrintLog>>,
     printer_online: watch::Receiver<bool>,
     health_snapshot: watch::Receiver<HealthSnapshot>,
+    http_state: watch::Receiver<String>,
     last_online_status: bool,
     show_settings: bool,
     settings_preset: PrinterPreset,
@@ -215,8 +234,19 @@ fn request_reprint(
         }
         return false;
     }
+    if let Ok(mut slot) = result.lock() {
+        *slot = None;
+    }
     in_progress.store(true, Ordering::SeqCst);
-    tx.send(commands.to_vec()).is_ok()
+    if tx.send(commands.to_vec()).is_ok() {
+        true
+    } else {
+        in_progress.store(false, Ordering::SeqCst);
+        if let Ok(mut slot) = result.lock() {
+            *slot = Some(Err("Reprint service is unavailable".to_string()));
+        }
+        false
+    }
 }
 
 struct WatchdogLease(std::path::PathBuf);
@@ -249,6 +279,7 @@ impl PrinterApp {
         print_log: Arc<Mutex<PrintLog>>,
         printer_online: watch::Receiver<bool>,
         health_snapshot: watch::Receiver<HealthSnapshot>,
+        http_state: watch::Receiver<String>,
         tray_active: bool,
         reprint_tx: std_mpsc::Sender<Vec<Command>>,
         reprint_in_progress: Arc<AtomicBool>,
@@ -290,6 +321,7 @@ impl PrinterApp {
             print_log,
             printer_online,
             health_snapshot,
+            http_state,
             last_online_status: false,
             show_settings: setup_requested,
             tray_active,
@@ -1059,6 +1091,7 @@ impl eframe::App for PrinterApp {
         egui::Panel::bottom("footer").show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.label(format!("Server: localhost:{}", self.config.server.port));
+                ui.label(self.http_state.borrow().as_str());
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui.button("\u{2699} Settings").clicked() {
                         self.show_settings = true;

@@ -51,6 +51,7 @@ fn main() {
 
     let (online_tx, online_rx) = watch::channel(false);
     let (health_tx, health_rx) = watch::channel(HealthSnapshot::initial(&SystemClock));
+    let (http_state_tx, http_state_rx) = watch::channel("Starting HTTP server".to_string());
 
     let usb_config = UsbConfig {
         vendor_id: config.printer.resolved_vendor_id(),
@@ -75,10 +76,18 @@ fn main() {
     let server_reprint_in_progress = reprint_in_progress.clone();
     let server_reprint_result = reprint_result.clone();
     let server_service = service.clone();
+    let server_http_state_tx = http_state_tx.clone();
     std::thread::spawn(move || {
         let rt = tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime");
         rt.block_on(async {
-            let port = server_config.server.port;
+            let port = if server_config.server.port == 0 {
+                log::error!(
+                    "Configured HTTP server port is 0; falling back to documented default 55000"
+                );
+                55000
+            } else {
+                server_config.server.port
+            };
 
             // Set up sensor reporter (only if API key is configured)
             let (sensor_tx, sensor_rx) = tokio::sync::mpsc::channel(64);
@@ -101,7 +110,21 @@ fn main() {
                 .with_sensor(sensor_tx.clone());
             let server_service = service.clone();
             tokio::spawn(async move {
-                run_with_port(server_service, server_print_log.clone(), port).await;
+                if let Err(error) = run_with_port(
+                    server_service,
+                    server_print_log.clone(),
+                    port,
+                    server_http_state_tx,
+                )
+                .await
+                {
+                    crate::app::file_logger::record_diagnostic_event(
+                        "http_server_bind_failed",
+                        "http_server_startup",
+                        Some(&error),
+                    );
+                    log::error!("{error}");
+                }
             });
 
             // The blocking owner performs initial USB open and all recovery. The
@@ -152,6 +175,7 @@ fn main() {
                 print_log,
                 online_rx,
                 health_rx,
+                http_state_rx,
                 tray_active,
                 reprint_tx,
                 reprint_in_progress,
