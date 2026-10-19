@@ -1,7 +1,7 @@
 use super::config::AppConfig;
 use super::print_log::PrintLog;
 use std::fs;
-use std::io;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -154,8 +154,11 @@ pub fn atomic_write(path: &Path, contents: &[u8]) -> io::Result<()> {
         path.file_name().and_then(|n| n.to_str()).unwrap_or("state"),
         stamp
     ));
-    fs::write(&temp, contents)?;
-    let file = fs::OpenOptions::new().read(true).open(&temp)?;
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temp)?;
+    file.write_all(contents)?;
     file.sync_all()?;
     drop(file);
     if path.exists() {
