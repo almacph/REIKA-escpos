@@ -11,6 +11,7 @@ pub enum AppError {
     InvalidInput(String),
     PrinterError(String),
     Internal(String),
+    Busy(String),
 }
 
 impl AppError {
@@ -18,6 +19,7 @@ impl AppError {
         match self {
             AppError::InvalidInput(_) => StatusCode::BAD_REQUEST,
             AppError::PrinterError(_) | AppError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            AppError::Busy(_) => StatusCode::SERVICE_UNAVAILABLE,
         }
     }
 
@@ -32,6 +34,7 @@ impl fmt::Display for AppError {
             AppError::InvalidInput(msg) => write!(f, "Invalid input: {}", msg),
             AppError::PrinterError(msg) => write!(f, "Printer error: {}", msg),
             AppError::Internal(msg) => write!(f, "Internal error: {}", msg),
+            AppError::Busy(msg) => write!(f, "Service busy: {}", msg),
         }
     }
 }

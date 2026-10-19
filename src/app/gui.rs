@@ -1,23 +1,34 @@
+#![allow(
+    clippy::items_after_test_module,
+    clippy::type_complexity,
+    clippy::too_many_arguments
+)]
+
 use crate::app::print_log::LogStatus;
-use crate::app::{is_exit_requested, notify_print_error, notify_print_success, notify_printer_offline, notify_printer_online, render_receipt_preview, take_show_requested, update_tray_status, AppConfig, LogEntry, PrintLog, PrinterPreset};
-use crate::models::Command;
+use crate::app::{
+    is_exit_requested, notify_print_error, notify_print_success, notify_printer_offline,
+    notify_printer_online, render_receipt_preview, take_operator_warnings, take_show_requested,
+    update_tray_status, AppConfig, LogEntry, PrintLog, PrinterPreset,
+};
+use crate::models::{Command, Commands};
+use crate::services::health::{HealthSnapshot, SystemClock};
+use crate::services::PrinterService;
 use eframe::egui;
-use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc as std_mpsc;
+use std::sync::{Arc, Mutex};
 use tokio::sync::watch;
 
 #[cfg(target_os = "windows")]
-use windows::Win32::UI::WindowsAndMessaging::{
-    BringWindowToTop, FindWindowW, GetForegroundWindow, GetWindowThreadProcessId,
-    SetForegroundWindow, SetWindowPos, ShowWindow,
-    HWND_TOP, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW,
-    SW_RESTORE, SW_SHOWNORMAL,
-};
+use windows::core::PCWSTR;
 #[cfg(target_os = "windows")]
 use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
 #[cfg(target_os = "windows")]
-use windows::core::PCWSTR;
+use windows::Win32::UI::WindowsAndMessaging::{
+    BringWindowToTop, FindWindowW, GetForegroundWindow, GetWindowThreadProcessId,
+    SetForegroundWindow, SetWindowPos, ShowWindow, HWND_TOP, SWP_NOMOVE, SWP_NOSIZE,
+    SWP_SHOWWINDOW, SW_RESTORE, SW_SHOWNORMAL,
+};
 
 /// Force window to foreground on Windows by finding it by title
 #[cfg(target_os = "windows")]
@@ -50,9 +61,12 @@ fn force_show_window_by_title(title: &str) {
                 let _ = SetForegroundWindow(hwnd);
                 let _ = SetWindowPos(
                     hwnd,
-                    HWND_TOP,
-                    0, 0, 0, 0,
-                    SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW
+                    Some(HWND_TOP),
+                    0,
+                    0,
+                    0,
+                    0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW,
                 );
 
                 if attached {
@@ -68,10 +82,96 @@ fn force_show_window_by_title(_title: &str) {
     // No-op on non-Windows platforms
 }
 
+#[cfg(test)]
+mod reprint_action_tests {
+    use super::*;
+    use crate::models::{BitImage, CashDrawer, CashDrawerPulse};
+
+    fn setup() -> (
+        std_mpsc::Sender<Vec<Command>>,
+        std_mpsc::Receiver<Vec<Command>>,
+        Arc<AtomicBool>,
+        Arc<Mutex<Option<Result<(), String>>>>,
+    ) {
+        let (tx, rx) = std_mpsc::channel();
+        (
+            tx,
+            rx,
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(Mutex::new(None)),
+        )
+    }
+
+    #[test]
+    fn invalid_saved_receipt_does_not_enqueue_or_create_history_result() {
+        let (tx, rx, progress, result) = setup();
+        assert!(!request_reprint(
+            &[Command::CashDrawerPulse(CashDrawerPulse {
+                pin: CashDrawer::Pin2,
+                pulse_ms: 125
+            })],
+            &tx,
+            &progress,
+            &result,
+        ));
+        assert!(rx.try_recv().is_err());
+        assert!(!progress.load(Ordering::SeqCst));
+        assert!(matches!(*result.lock().unwrap(), Some(Err(_))));
+    }
+
+    #[test]
+    fn image_only_mixed_and_legacy_saved_receipts_enqueue() {
+        let (tx, rx, progress, result) = setup();
+        let image = Command::BitImage(BitImage {
+            width: 8,
+            height: 1,
+            data: "AA==".into(),
+        });
+        assert!(request_reprint(
+            std::slice::from_ref(&image),
+            &tx,
+            &progress,
+            &result
+        ));
+        assert!(rx.try_recv().is_ok());
+        progress.store(false, Ordering::SeqCst);
+        assert!(request_reprint(
+            &[Command::Italic(true), image],
+            &tx,
+            &progress,
+            &result
+        ));
+        assert!(rx.try_recv().is_ok());
+        progress.store(false, Ordering::SeqCst);
+        assert!(request_reprint(
+            &[Command::Writeln("legacy".into())],
+            &tx,
+            &progress,
+            &result
+        ));
+        assert!(rx.try_recv().is_ok());
+    }
+
+    #[test]
+    fn watchdog_lease_is_removed_when_maintenance_setup_fails_or_finishes() {
+        let root = std::env::temp_dir().join(format!("reika-gui-lease-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let path = root.join("maintenance.lease");
+        {
+            let lease = WatchdogLease::create(&root).expect("lease should be created");
+            assert!(path.is_file());
+            lease.refresh();
+        }
+        assert!(!path.exists());
+        let _ = std::fs::remove_dir_all(root);
+    }
+}
+
 pub struct PrinterApp {
     config: AppConfig,
     print_log: Arc<Mutex<PrintLog>>,
     printer_online: watch::Receiver<bool>,
+    health_snapshot: watch::Receiver<HealthSnapshot>,
     last_online_status: bool,
     show_settings: bool,
     settings_preset: PrinterPreset,
@@ -90,6 +190,56 @@ pub struct PrinterApp {
     reprint_tx: std_mpsc::Sender<Vec<Command>>,
     reprint_in_progress: Arc<AtomicBool>,
     reprint_result: Arc<Mutex<Option<Result<(), String>>>>,
+    operator_warnings: Vec<String>,
+    driver_diagnostics: Option<std_mpsc::Receiver<Vec<crate::app::driver_setup::DeviceDiagnostic>>>,
+    driver_results: Vec<crate::app::driver_setup::DeviceDiagnostic>,
+    driver_selected: Option<usize>,
+    driver_repair: Option<std_mpsc::Receiver<crate::app::driver_setup::RepairOutcome>>,
+    driver_repair_started: Option<std::time::Instant>,
+    driver_repair_status: Option<String>,
+    service: PrinterService,
+}
+
+fn request_reprint(
+    commands: &[Command],
+    tx: &std_mpsc::Sender<Vec<Command>>,
+    in_progress: &AtomicBool,
+    result: &Arc<Mutex<Option<Result<(), String>>>>,
+) -> bool {
+    let request = Commands {
+        commands: commands.to_vec(),
+    };
+    if let Err(error) = request.validate() {
+        if let Ok(mut slot) = result.lock() {
+            *slot = Some(Err(format!("Invalid saved receipt: {error}")));
+        }
+        return false;
+    }
+    in_progress.store(true, Ordering::SeqCst);
+    tx.send(commands.to_vec()).is_ok()
+}
+
+struct WatchdogLease(std::path::PathBuf);
+
+impl WatchdogLease {
+    fn create(root: &std::path::Path) -> Result<Self, String> {
+        std::fs::create_dir_all(root)
+            .map_err(|error| format!("could not create maintenance state directory: {error}"))?;
+        let path = root.join("maintenance.lease");
+        std::fs::write(&path, b"driver-repair\n")
+            .map_err(|error| format!("could not create maintenance lease: {error}"))?;
+        Ok(Self(path))
+    }
+
+    fn refresh(&self) {
+        let _ = std::fs::write(&self.0, b"driver-repair\n");
+    }
+}
+
+impl Drop for WatchdogLease {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
 }
 
 impl PrinterApp {
@@ -98,21 +248,32 @@ impl PrinterApp {
         config: AppConfig,
         print_log: Arc<Mutex<PrintLog>>,
         printer_online: watch::Receiver<bool>,
+        health_snapshot: watch::Receiver<HealthSnapshot>,
         tray_active: bool,
         reprint_tx: std_mpsc::Sender<Vec<Command>>,
         reprint_in_progress: Arc<AtomicBool>,
         reprint_result: Arc<Mutex<Option<Result<(), String>>>>,
+        service: PrinterService,
+        setup_requested: bool,
     ) -> Self {
-        let settings_vendor_id = config.printer.vendor_id
+        let settings_vendor_id = config
+            .printer
+            .vendor_id
             .map(|v| format!("0x{:04X}", v))
             .unwrap_or_default();
-        let settings_product_id = config.printer.product_id
+        let settings_product_id = config
+            .printer
+            .product_id
             .map(|v| format!("0x{:04X}", v))
             .unwrap_or_default();
-        let settings_endpoint = config.printer.endpoint
+        let settings_endpoint = config
+            .printer
+            .endpoint
             .map(|v| v.to_string())
             .unwrap_or_default();
-        let settings_interface = config.printer.interface
+        let settings_interface = config
+            .printer
+            .interface
             .map(|v| v.to_string())
             .unwrap_or_default();
         Self {
@@ -128,8 +289,9 @@ impl PrinterApp {
             config,
             print_log,
             printer_online,
+            health_snapshot,
             last_online_status: false,
-            show_settings: false,
+            show_settings: setup_requested,
             tray_active,
             should_exit: false,
             minimized_to_tray: false,
@@ -137,11 +299,20 @@ impl PrinterApp {
             reprint_tx,
             reprint_in_progress,
             reprint_result,
+            operator_warnings: take_operator_warnings(),
+            driver_diagnostics: None,
+            driver_results: Vec::new(),
+            driver_selected: None,
+            driver_repair: None,
+            driver_repair_started: None,
+            driver_repair_status: None,
+            service,
         }
     }
 
     fn render_status_panel(&self, ui: &mut egui::Ui) {
         let is_online = *self.printer_online.borrow();
+        let health = self.health_snapshot.borrow().refreshed(&SystemClock);
 
         egui::Frame::group(ui.style())
             .fill(ui.style().visuals.window_fill)
@@ -174,10 +345,10 @@ impl PrinterApp {
                     });
 
                     ui.add_space(8.0);
-                    egui::Frame::none()
+                    egui::Frame::NONE
                         .fill(egui::Color32::from_rgb(60, 30, 30))
                         .inner_margin(8.0)
-                        .rounding(4.0)
+                        .corner_radius(4.0)
                         .show(ui, |ui: &mut egui::Ui| {
                             ui.label(
                                 egui::RichText::new("\u{26A0} Printer Offline")
@@ -200,6 +371,29 @@ impl PrinterApp {
                     self.config.printer.resolved_vendor_id(),
                     self.config.printer.resolved_product_id()
                 ));
+                ui.label(format!(
+                    "Transport: {:?} ({}s ago)",
+                    health.transport,
+                    health.transport_age_millis / 1000
+                ));
+                ui.label(format!(
+                    "Readiness: {:?} ({})",
+                    health.readiness,
+                    if health.status_capability
+                        == crate::services::health::StatusCapability::Verified
+                    {
+                        "verified"
+                    } else {
+                        "unknown"
+                    }
+                ));
+                ui.label(format!(
+                    "Reason: {:?} · Generation {}",
+                    health.reason, health.generation.0
+                ));
+                if health.busy {
+                    ui.label("Busy or retrying");
+                }
             });
     }
 
@@ -209,7 +403,11 @@ impl PrinterApp {
             .show(ui, |ui| {
                 ui.heading("Print Log");
                 ui.add_space(2.0);
-                ui.label(egui::RichText::new("Click an entry to preview the receipt").weak().small());
+                ui.label(
+                    egui::RichText::new("Click an entry to preview the receipt")
+                        .weak()
+                        .small(),
+                );
                 ui.add_space(4.0);
 
                 let Ok(log) = self.print_log.lock() else {
@@ -251,16 +449,16 @@ impl PrinterApp {
                                             match entry.status {
                                                 LogStatus::Success => {
                                                     ui.label(
-                                                        egui::RichText::new("\u{2713}")
-                                                            .color(egui::Color32::from_rgb(
-                                                                100, 200, 100,
-                                                            )),
+                                                        egui::RichText::new("\u{2713}").color(
+                                                            egui::Color32::from_rgb(100, 200, 100),
+                                                        ),
                                                     );
                                                 }
                                                 LogStatus::Error => {
                                                     ui.label(
-                                                        egui::RichText::new("\u{2717}")
-                                                            .color(egui::Color32::from_rgb(200, 100, 100)),
+                                                        egui::RichText::new("\u{2717}").color(
+                                                            egui::Color32::from_rgb(200, 100, 100),
+                                                        ),
                                                     );
                                                 }
                                             }
@@ -268,7 +466,9 @@ impl PrinterApp {
                                     );
                                 });
 
-                                if has_commands && response.response.interact(egui::Sense::click()).clicked() {
+                                if has_commands
+                                    && response.response.interact(egui::Sense::click()).clicked()
+                                {
                                     self.preview_entry = Some(entry);
                                 }
 
@@ -328,8 +528,12 @@ impl PrinterApp {
                         let button = egui::Button::new(button_text);
                         if ui.add_enabled(can_reprint, button).clicked() {
                             if let Some(cmds) = &entry.commands {
-                                self.reprint_in_progress.store(true, Ordering::SeqCst);
-                                let _ = self.reprint_tx.send(cmds.clone());
+                                let _ = request_reprint(
+                                    cmds,
+                                    &self.reprint_tx,
+                                    &self.reprint_in_progress,
+                                    &self.reprint_result,
+                                );
                             }
                         }
 
@@ -352,7 +556,11 @@ impl PrinterApp {
                         ui.add_space(4.0);
                         render_receipt_preview(ui, commands);
                     } else {
-                        ui.label(egui::RichText::new("No receipt data available").italics().weak());
+                        ui.label(
+                            egui::RichText::new("No receipt data available")
+                                .italics()
+                                .weak(),
+                        );
                     }
                 });
 
@@ -387,11 +595,19 @@ impl PrinterApp {
                 ui.add_space(8.0);
 
                 ui.horizontal(|ui| {
-                    ui.radio_value(&mut self.settings_preset, PrinterPreset::Standard, "Standard");
+                    ui.radio_value(
+                        &mut self.settings_preset,
+                        PrinterPreset::Standard,
+                        "Standard",
+                    );
                     ui.label("(XP-58IIH, 0x0483:0x5840)");
                 });
                 ui.horizontal(|ui| {
-                    ui.radio_value(&mut self.settings_preset, PrinterPreset::IcsAdvent, "ICS Advent");
+                    ui.radio_value(
+                        &mut self.settings_preset,
+                        PrinterPreset::IcsAdvent,
+                        "ICS Advent",
+                    );
                     ui.label("(0x0FE6:0x811E, EP:1, IF:0)");
                 });
                 ui.horizontal(|ui| {
@@ -483,12 +699,191 @@ impl PrinterApp {
                 ui.heading("Debug Logging");
                 ui.add_space(8.0);
 
-                ui.checkbox(&mut self.settings_logging_enabled, "Enable debug logging to file");
-                ui.label(
-                    egui::RichText::new("Logs to reika-debug.log next to executable")
-                        .weak()
-                        .small(),
+                ui.checkbox(
+                    &mut self.settings_logging_enabled,
+                    "Enable debug logging to file",
                 );
+                ui.label(
+                    egui::RichText::new(format!(
+                        "State directory: {}",
+                        crate::app::storage::StateDirectory::resolve()
+                            .root()
+                            .display()
+                    ))
+                    .weak()
+                    .small(),
+                );
+                if ui.button("Export diagnostics").clicked() {
+                    match crate::app::write_diagnostic_export() {
+                        Ok(path) => {
+                            notify_print_success(&format!("Diagnostics: {}", path.display()))
+                        }
+                        Err(error) => notify_print_error("Diagnostics", &error.to_string()),
+                    }
+                }
+
+                ui.add_space(12.0);
+                ui.separator();
+                ui.heading("Windows USB Setup / Repair");
+                ui.label(
+                    "Read-only inventory. Setup changes require an explicit elevated installer.",
+                );
+                if ui.button("Inspect driver bindings").clicked()
+                    && self.driver_diagnostics.is_none()
+                {
+                    let (tx, rx) = std_mpsc::channel();
+                    self.driver_diagnostics = Some(rx);
+                    std::thread::spawn(move || {
+                        let _ = tx.send(crate::app::driver_setup::inventory());
+                    });
+                }
+                if let Some(rx) = &self.driver_diagnostics {
+                    if let Ok(results) = rx.try_recv() {
+                        self.driver_results = results;
+                        self.driver_diagnostics = None;
+                    }
+                }
+                for result in &self.driver_results {
+                    ui.label(format!("{} — {}", result.state, result.detail));
+                    if !result.hardware_id.is_empty() {
+                        ui.small(format!(
+                            "{} / {} / {}",
+                            result.hardware_id, result.service, result.provider
+                        ));
+                    }
+                }
+                if !self.driver_results.is_empty() {
+                    ui.add_space(6.0);
+                    ui.label("Select the exact enumerated device before repair:");
+                    for (index, result) in self.driver_results.iter().enumerate() {
+                        let label = if result.instance_id.is_empty() {
+                            format!("{} ({})", result.state, result.hardware_id)
+                        } else {
+                            result.instance_id.clone()
+                        };
+                        if ui
+                            .selectable_label(self.driver_selected == Some(index), label)
+                            .clicked()
+                        {
+                            self.driver_selected = Some(index);
+                            self.driver_repair_status = None;
+                        }
+                    }
+                    let selected = self
+                        .driver_selected
+                        .and_then(|index| self.driver_results.get(index));
+                    let can_repair = selected.is_some_and(|device| {
+                        !device.instance_id.is_empty()
+                            && device.preset.is_some()
+                            && !matches!(
+                                device.state,
+                                crate::app::driver_setup::DriverState::Absent
+                                    | crate::app::driver_setup::DriverState::Unsupported
+                                    | crate::app::driver_setup::DriverState::Ambiguous
+                            )
+                    }) && self.driver_repair.is_none();
+                    if ui
+                        .add_enabled(can_repair, egui::Button::new("Repair selected device (administrator)"))
+                        .clicked()
+                    {
+                        if let Some(device) = selected.cloned() {
+                            let instance = device.instance_id;
+                            let key = match device.preset.unwrap_or_default() {
+                                "ICS Advent" => "ics-advent",
+                                _ => "standard",
+                            }
+                            .to_string();
+                            let service = self.service.clone();
+                            let (tx, rx) = std_mpsc::channel();
+                            self.driver_repair = Some(rx);
+                            self.driver_repair_started = Some(std::time::Instant::now());
+                            self.driver_repair_status = Some(
+                                "Releasing the printer handle before requesting administrator approval…"
+                                    .into(),
+                            );
+                            std::thread::spawn(move || {
+                                let runtime = match tokio::runtime::Runtime::new() {
+                                    Ok(runtime) => runtime,
+                                    Err(error) => {
+                                        let _ = tx.send(
+                                            crate::app::driver_setup::RepairOutcome::Failed(
+                                                format!("could not start repair worker: {error}"),
+                                            ),
+                                        );
+                                        return;
+                                    }
+                                };
+                                let result = runtime.block_on(async move {
+                                    let state_dir = crate::app::storage::StateDirectory::resolve();
+                                    if !state_dir.is_available() {
+                                        return Err(crate::error::AppError::Internal(
+                                            state_dir.error().unwrap_or("user state directory unavailable").into(),
+                                        ));
+                                    }
+                                    // Pause watchdog recovery before asking the owner to release
+                                    // its handle, closing the small race between those operations.
+                                    let watchdog_lease = WatchdogLease::create(state_dir.root())
+                                        .map_err(crate::error::AppError::Internal)?;
+                                    let lease = match service.enter_maintenance().await {
+                                        Ok(lease) => lease,
+                                        Err(error) => {
+                                            drop(watchdog_lease);
+                                            return Err(error);
+                                        }
+                                    };
+                                    let helper = crate::app::driver_setup::launch_repair(instance, key);
+                                    let result = loop {
+                                        match helper.recv_timeout(std::time::Duration::from_secs(30)) {
+                                            Ok(outcome) => break outcome,
+                                            Err(std_mpsc::RecvTimeoutError::Timeout) => {
+                                                // Keep the watchdog lease fresh while the helper
+                                                // remains alive. This also keeps maintenance held
+                                                // if Windows denied PROCESS_TERMINATE.
+                                                watchdog_lease.refresh();
+                                            }
+                                            Err(std_mpsc::RecvTimeoutError::Disconnected) => {
+                                                break crate::app::driver_setup::RepairOutcome::Failed(
+                                                    "elevated helper worker crashed".into(),
+                                                )
+                                            }
+                                        }
+                                    };
+                                    drop(lease);
+                                    drop(watchdog_lease);
+                                    Ok::<_, crate::error::AppError>(result)
+                                });
+                                let outcome = match result {
+                                    Ok(outcome) => outcome,
+                                    Err(error) => crate::app::driver_setup::RepairOutcome::Failed(
+                                        error.to_string(),
+                                    ),
+                                };
+                                let _ = tx.send(outcome);
+                            });
+                        }
+                    }
+                    if let Some(rx) = &self.driver_repair {
+                        if let Ok(outcome) = rx.try_recv() {
+                            self.driver_repair_status = Some(outcome.to_string());
+                            self.driver_repair = None;
+                            self.driver_repair_started = None;
+                            self.driver_diagnostics = None;
+                        }
+                    }
+                    if self.driver_repair.is_some()
+                        && self
+                            .driver_repair_started
+                            .is_some_and(|started| started.elapsed() >= std::time::Duration::from_secs(300))
+                    {
+                        self.driver_repair_status = Some(
+                            "Administrator helper did not exit after 300 seconds; maintenance remains active and manual recovery may be required."
+                                .into(),
+                        );
+                    }
+                    if let Some(status) = &self.driver_repair_status {
+                        ui.label(status);
+                    }
+                }
 
                 ui.add_space(16.0);
                 ui.label(
@@ -506,11 +901,13 @@ impl PrinterApp {
                             self.config.printer.vendor_id = u16::from_str_radix(
                                 self.settings_vendor_id.trim_start_matches("0x"),
                                 16,
-                            ).ok();
+                            )
+                            .ok();
                             self.config.printer.product_id = u16::from_str_radix(
                                 self.settings_product_id.trim_start_matches("0x"),
                                 16,
-                            ).ok();
+                            )
+                            .ok();
                             self.config.printer.endpoint = self.settings_endpoint.parse().ok();
                             self.config.printer.interface = self.settings_interface.parse().ok();
                         } else {
@@ -526,21 +923,38 @@ impl PrinterApp {
                         self.config.ui.logging_enabled = self.settings_logging_enabled;
                         self.config.reika.api_key = self.settings_reika_api_key.clone();
                         self.config.reika.server_url = self.settings_reika_server_url.clone();
-                        let _ = self.config.save();
-                        self.show_settings = false;
+                        match self.config.save() {
+                            Ok(()) => self.show_settings = false,
+                            Err(error) => notify_print_error(
+                                "Settings",
+                                &format!("Could not save configuration: {error}"),
+                            ),
+                        }
                     }
                     if ui.button("Cancel").clicked() {
                         self.settings_preset = self.config.printer.preset;
-                        self.settings_vendor_id = self.config.printer.vendor_id
+                        self.settings_vendor_id = self
+                            .config
+                            .printer
+                            .vendor_id
                             .map(|v| format!("0x{:04X}", v))
                             .unwrap_or_default();
-                        self.settings_product_id = self.config.printer.product_id
+                        self.settings_product_id = self
+                            .config
+                            .printer
+                            .product_id
                             .map(|v| format!("0x{:04X}", v))
                             .unwrap_or_default();
-                        self.settings_endpoint = self.config.printer.endpoint
+                        self.settings_endpoint = self
+                            .config
+                            .printer
+                            .endpoint
                             .map(|v| v.to_string())
                             .unwrap_or_default();
-                        self.settings_interface = self.config.printer.interface
+                        self.settings_interface = self
+                            .config
+                            .printer
+                            .interface
                             .map(|v| v.to_string())
                             .unwrap_or_default();
                         self.settings_port = self.config.server.port.to_string();
@@ -580,33 +994,35 @@ impl PrinterApp {
         self.minimized_to_tray = false;
         force_show_window_by_title("REIKA Printer Service");
         ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(450.0, 500.0)));
-        ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(100.0, 100.0)));
+        ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(
+            100.0, 100.0,
+        )));
         ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
         ctx.request_repaint();
     }
 }
 
 impl eframe::App for PrinterApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let ctx = ui.ctx().clone();
         ctx.request_repaint_after(std::time::Duration::from_millis(100));
 
-        self.handle_tray_events(ctx);
+        self.handle_tray_events(&ctx);
         self.poll_reprint_result();
+        self.operator_warnings.extend(take_operator_warnings());
 
         if self.should_exit || is_exit_requested() {
             std::process::exit(0);
         }
 
-        if ctx.input(|i| i.viewport().close_requested()) {
-            if self.tray_active {
-                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-                ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
-                self.minimized_to_tray = true;
-                return;
-            }
+        if ctx.input(|i| i.viewport().close_requested()) && self.tray_active {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+            self.minimized_to_tray = true;
+            return;
         }
 
-        egui::TopBottomPanel::top("header").show(ctx, |ui| {
+        egui::Panel::top("header").show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.heading("REIKA Printer Service");
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -626,7 +1042,21 @@ impl eframe::App for PrinterApp {
             });
         });
 
-        egui::TopBottomPanel::bottom("footer").show(ctx, |ui| {
+        if !self.operator_warnings.is_empty() {
+            egui::Panel::top("operator-warnings").show(ui, |ui| {
+                for warning in &self.operator_warnings {
+                    ui.colored_label(
+                        egui::Color32::from_rgb(180, 80, 0),
+                        format!("Warning: {warning}"),
+                    );
+                }
+                if ui.small_button("Dismiss").clicked() {
+                    self.operator_warnings.clear();
+                }
+            });
+        }
+
+        egui::Panel::bottom("footer").show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.label(format!("Server: localhost:{}", self.config.server.port));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -637,16 +1067,16 @@ impl eframe::App for PrinterApp {
             });
         });
 
-        egui::CentralPanel::default().show(ctx, |ui| {
+        egui::CentralPanel::default().show(ui, |ui| {
             self.render_status_panel(ui);
             ui.add_space(8.0);
             self.render_log_panel(ui);
         });
 
         if self.show_settings {
-            self.render_settings_window(ctx);
+            self.render_settings_window(&ctx);
         }
 
-        self.render_preview_window(ctx);
+        self.render_preview_window(&ctx);
     }
 }
