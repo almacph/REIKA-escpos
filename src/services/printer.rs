@@ -1716,10 +1716,10 @@ mod owner_tests {
         }
         release.store(true, Ordering::Release);
         let _ = print.await;
-        assert!(!service.health_snapshot().busy);
         for task in queued {
             let _ = task.await;
         }
+        assert!(!service.health_snapshot().busy);
     }
 
     struct FailingBackend;
