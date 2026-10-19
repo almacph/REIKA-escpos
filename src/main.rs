@@ -154,6 +154,11 @@ fn main() {
                     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                 }
             });
+
+            // Keep this runtime alive for the lifetime of the desktop app.
+            // Dropping it here would cancel the detached HTTP and reprint
+            // tasks immediately after startup.
+            std::future::pending::<()>().await;
         });
     });
 
