@@ -157,21 +157,43 @@ pub fn atomic_write(path: &Path, contents: &[u8]) -> io::Result<()> {
     fs::write(&temp, contents)?;
     let file = fs::OpenOptions::new().read(true).open(&temp)?;
     file.sync_all()?;
+    drop(file);
     if path.exists() {
         let _ = fs::copy(path, path.with_extension("last-good"));
-        let old = path.with_extension("replace-old");
-        let _ = fs::remove_file(&old);
-        fs::rename(path, &old)?;
-        if let Err(error) = fs::rename(&temp, path) {
-            let _ = fs::rename(&old, path);
-            let _ = fs::remove_file(&temp);
-            return Err(error);
-        }
-        let _ = fs::remove_file(old);
+        replace_existing(&temp, path)?;
     } else {
         fs::rename(&temp, path)?;
     }
     Ok(())
+}
+
+#[cfg(not(windows))]
+fn replace_existing(temp: &Path, path: &Path) -> io::Result<()> {
+    // rename replaces an existing file atomically on Unix-like platforms.
+    fs::rename(temp, path)
+}
+
+#[cfg(windows)]
+fn replace_existing(temp: &Path, path: &Path) -> io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows::core::PCWSTR;
+    use windows::Win32::Storage::FileSystem::{ReplaceFileW, REPLACE_FILE_FLAGS};
+
+    let path_wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+    let temp_wide: Vec<u16> = temp.as_os_str().encode_wide().chain(Some(0)).collect();
+    // ReplaceFileW keeps the destination continuously present and removes the
+    // replacement file only after the atomic replacement succeeds.
+    unsafe {
+        ReplaceFileW(
+            PCWSTR(path_wide.as_ptr()),
+            PCWSTR(temp_wide.as_ptr()),
+            PCWSTR::null(),
+            REPLACE_FILE_FLAGS(0),
+            None,
+            None,
+        )
+    }
+    .map_err(|error| io::Error::from_raw_os_error((error.code().0 as u32 & 0xffff) as i32))
 }
 
 #[cfg(test)]
