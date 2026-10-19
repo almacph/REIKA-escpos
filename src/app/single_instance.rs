@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 #[cfg(windows)]
 use windows::core::PCWSTR;
 #[cfg(windows)]
@@ -17,7 +19,10 @@ pub struct SingleInstance {
 #[cfg(windows)]
 impl SingleInstance {
     pub fn acquire() -> Result<Self, SingleInstanceError> {
-        let wide_name: Vec<u16> = MUTEX_NAME.encode_utf16().chain(std::iter::once(0)).collect();
+        let wide_name: Vec<u16> = MUTEX_NAME
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
 
         unsafe {
             if let Ok(existing) = OpenMutexW(MUTEX_ALL_ACCESS, false, PCWSTR(wide_name.as_ptr())) {

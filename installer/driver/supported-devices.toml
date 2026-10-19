@@ -1,0 +1,23 @@
+# Reviewed hardware allowlist.  Interface numbers are intentionally pending
+# physical composite-device capture and must be filled before signing a CAT.
+version = 1
+
+[[device]]
+preset = "standard"
+vendor_id = "0483"
+product_id = "5840"
+interface = "CAPTURE_REQUIRED"
+interface_guid = "CAPTURE_REQUIRED"
+provider = "CAPTURE_REQUIRED"
+signer_thumbprint = "CAPTURE_REQUIRED"
+notes = "XP-58IIH preset; do not assume interface 0 for a composite device"
+
+[[device]]
+preset = "ics-advent"
+vendor_id = "0FE6"
+product_id = "811E"
+interface = "CAPTURE_REQUIRED"
+interface_guid = "CAPTURE_REQUIRED"
+provider = "CAPTURE_REQUIRED"
+signer_thumbprint = "CAPTURE_REQUIRED"
+notes = "ICS Advent preset; current runtime default is interface 0 pending confirmation"

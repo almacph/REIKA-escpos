@@ -1,3 +1,4 @@
+#![allow(clippy::collapsible_match)]
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
 use std::thread;
@@ -33,7 +34,6 @@ fn request_exit() {
 fn request_show() {
     SHOW_REQUESTED.store(true, Ordering::SeqCst);
 }
-
 
 /// Update tray icon status (called from GUI thread)
 pub fn update_tray_status(online: bool) {
@@ -132,7 +132,7 @@ fn start_tray_thread() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 #[cfg(target_os = "windows")]
 fn run_windows_message_loop(tray_icon: &TrayIcon) {
     use windows::Win32::UI::WindowsAndMessaging::{
-        DispatchMessageW, TranslateMessage, MSG, PeekMessageW, PM_REMOVE,
+        DispatchMessageW, PeekMessageW, TranslateMessage, MSG, PM_REMOVE,
     };
 
     loop {
@@ -152,7 +152,11 @@ fn run_windows_message_loop(tray_icon: &TrayIcon) {
         // Process tray icon click events
         while let Ok(event) = TrayIconEvent::receiver().try_recv() {
             match &event {
-                TrayIconEvent::Click { button, button_state, .. } => {
+                TrayIconEvent::Click {
+                    button,
+                    button_state,
+                    ..
+                } => {
                     if matches!(button, tray_icon::MouseButton::Left)
                         && matches!(button_state, tray_icon::MouseButtonState::Up)
                     {
@@ -171,12 +175,12 @@ fn run_windows_message_loop(tray_icon: &TrayIcon) {
         // Process menu events
         while let Ok(event) = MenuEvent::receiver().try_recv() {
             if let Some(exit_id) = EXIT_MENU_ID.get() {
-                if &event.id == exit_id {
+                if event.id == exit_id {
                     request_exit();
                 }
             }
             if let Some(show_id) = SHOW_MENU_ID.get() {
-                if &event.id == show_id {
+                if event.id == show_id {
                     request_show();
                 }
             }
@@ -210,7 +214,11 @@ fn run_polling_loop(tray_icon: &TrayIcon) {
         // Process tray icon events
         while let Ok(event) = TrayIconEvent::receiver().try_recv() {
             match &event {
-                TrayIconEvent::Click { button, button_state, .. } => {
+                TrayIconEvent::Click {
+                    button,
+                    button_state,
+                    ..
+                } => {
                     if matches!(button, tray_icon::MouseButton::Left)
                         && matches!(button_state, tray_icon::MouseButtonState::Up)
                     {
@@ -229,12 +237,12 @@ fn run_polling_loop(tray_icon: &TrayIcon) {
         // Process menu events
         while let Ok(event) = MenuEvent::receiver().try_recv() {
             if let Some(exit_id) = EXIT_MENU_ID.get() {
-                if &event.id == exit_id {
+                if event.id == exit_id {
                     request_exit();
                 }
             }
             if let Some(show_id) = SHOW_MENU_ID.get() {
-                if &event.id == show_id {
+                if event.id == show_id {
                     request_show();
                 }
             }
@@ -264,7 +272,7 @@ impl SystemTray {
     pub fn new() -> Result<Self, Box<dyn std::error::Error>> {
         if !TRAY_READY.load(Ordering::SeqCst) {
             start_tray_thread().map_err(|e| -> Box<dyn std::error::Error> {
-                Box::new(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
+                Box::new(std::io::Error::other(e.to_string()))
             })?;
 
             // Wait for tray to be ready (with timeout)
