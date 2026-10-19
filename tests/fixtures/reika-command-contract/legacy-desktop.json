@@ -1,0 +1,7 @@
+{
+  "commands": [
+    {"command": "Italic", "parameters": false},
+    {"command": "MaxiCode", "parameters": "LEGACY"},
+    {"command": "CashDrawer", "parameters": "Pin5"}
+  ]
+}

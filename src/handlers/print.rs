@@ -5,8 +5,11 @@ use warp::http::StatusCode;
 use warp::reply::json;
 use warp::Reply;
 
+use crate::app::file_logger::record_diagnostic_event;
 use crate::app::{notify_print_error, notify_print_success, PrintLog};
-use crate::models::{Commands, PrinterTestSchema, StatusResponse};
+use crate::models::{
+    Commands, HealthResponse, PrinterTestSchema, StatusResponse, MAX_JOB_BODY_BYTES,
+};
 use crate::services::PrinterService;
 
 pub async fn handle_status(service: PrinterService) -> Result<impl Reply, Infallible> {
@@ -23,6 +26,20 @@ pub async fn handle_status(service: PrinterService) -> Result<impl Reply, Infall
     Ok(warp::reply::with_status(json(&response), StatusCode::OK))
 }
 
+pub async fn handle_health() -> Result<impl Reply, Infallible> {
+    let response = HealthResponse {
+        status: "ok",
+        version: env!("CARGO_PKG_VERSION"),
+        uptime_seconds: crate::server::uptime_seconds(),
+    };
+    Ok(warp::reply::with_status(json(&response), StatusCode::OK))
+}
+
+pub async fn handle_printer_status(service: PrinterService) -> Result<impl Reply, Infallible> {
+    let snapshot = service.health_snapshot();
+    Ok(warp::reply::with_status(json(&snapshot), StatusCode::OK))
+}
+
 pub async fn handle_test_print(
     service: PrinterService,
     print_log: Arc<Mutex<PrintLog>>,
@@ -30,6 +47,7 @@ pub async fn handle_test_print(
 ) -> Result<impl Reply, Infallible> {
     match service.print_test(request).await {
         Ok(()) => {
+            record_diagnostic_event("print_succeeded", "print_attempt", None);
             notify_print_success("Test print");
             if let Ok(mut log) = print_log.lock() {
                 log.add_success("Test print".to_string());
@@ -40,6 +58,7 @@ pub async fn handle_test_print(
             ))
         }
         Err(e) => {
+            record_diagnostic_event("print_failed", "print_attempt", None);
             let status = e.status_code();
             let error_msg = e.to_string();
             notify_print_error("Test print", &error_msg);
@@ -59,6 +78,15 @@ pub async fn handle_print(
     print_log: Arc<Mutex<PrintLog>>,
     body: serde_json::Value,
 ) -> Result<impl Reply, Infallible> {
+    if serde_json::to_vec(&body).map_or(true, |bytes| bytes.len() > MAX_JOB_BODY_BYTES) {
+        return Ok(warp::reply::with_status(
+            json(&StatusResponse::error(
+                false,
+                "Invalid input: print job exceeds 4 MiB",
+            )),
+            StatusCode::BAD_REQUEST,
+        ));
+    }
     let commands: Commands = match serde_json::from_value(body) {
         Ok(c) => c,
         Err(e) => {
@@ -73,10 +101,22 @@ pub async fn handle_print(
         }
     };
 
+    if let Err(error) = commands.validate() {
+        let error_msg = format!("Invalid input: {error}");
+        if let Ok(mut log) = print_log.lock() {
+            log.add_error("Print job".to_string(), error_msg.clone());
+        }
+        return Ok(warp::reply::with_status(
+            json(&StatusResponse::error(false, error_msg)),
+            StatusCode::BAD_REQUEST,
+        ));
+    }
+
     let cmd_count = commands.commands.len();
     let commands_for_log = commands.commands.clone();
     match service.execute_commands(commands).await {
         Ok(()) => {
+            record_diagnostic_event("print_succeeded", "print_attempt", None);
             let summary = format!("Print job ({} commands)", cmd_count);
             notify_print_success(&summary);
             if let Ok(mut log) = print_log.lock() {
@@ -88,11 +128,16 @@ pub async fn handle_print(
             ))
         }
         Err(e) => {
+            record_diagnostic_event("print_failed", "print_attempt", None);
             let status = e.status_code();
             let error_msg = e.to_string();
             notify_print_error("Print job", &error_msg);
             if let Ok(mut log) = print_log.lock() {
-                log.add_error_with_commands(format!("Print job ({} commands)", cmd_count), error_msg, commands_for_log);
+                log.add_error_with_commands(
+                    format!("Print job ({} commands)", cmd_count),
+                    error_msg,
+                    commands_for_log,
+                );
             }
             Ok(warp::reply::with_status(
                 json(&e.to_response(false)),
@@ -106,6 +151,15 @@ pub async fn handle_reprint(
     service: PrinterService,
     body: serde_json::Value,
 ) -> Result<impl Reply, Infallible> {
+    if serde_json::to_vec(&body).map_or(true, |bytes| bytes.len() > MAX_JOB_BODY_BYTES) {
+        return Ok(warp::reply::with_status(
+            json(&StatusResponse::error(
+                false,
+                "Invalid input: reprint job exceeds 4 MiB",
+            )),
+            StatusCode::BAD_REQUEST,
+        ));
+    }
     let commands: Commands = match serde_json::from_value(body) {
         Ok(c) => c,
         Err(e) => {
@@ -116,6 +170,16 @@ pub async fn handle_reprint(
             ));
         }
     };
+
+    if let Err(error) = commands.validate() {
+        return Ok(warp::reply::with_status(
+            json(&StatusResponse::error(
+                false,
+                format!("Invalid input: {error}"),
+            )),
+            StatusCode::BAD_REQUEST,
+        ));
+    }
 
     match service.execute_reprint_commands(commands).await {
         Ok(()) => {

@@ -1,0 +1,9 @@
+{
+  "commands": [
+    {"command": "Write", "parameters": "Fixture"},
+    {"command": "Italic", "parameters": true},
+    {"command": "Maxicode", "parameters": "MAXI"},
+    {"command": "CashDrawerPulse", "parameters": {"pin": "Pin2", "pulseMs": 150}},
+    {"command": "BitImage", "parameters": {"width": 9, "height": 2, "data": "AAAAAA=="}}
+  ]
+}

@@ -1,3 +1,5 @@
+#![allow(clippy::upper_case_acronyms)]
+
 use escpos::utils::{
     CashDrawer as EscCashDrawer, CharacterSet as EscCharacterSet, Font as EscFont,
     JustifyMode as EscJustifyMode, PageCode as EscPageCode, UnderlineMode as EscUnderlineMode,
@@ -217,6 +219,20 @@ pub enum CashDrawer {
     Pin5,
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct CashDrawerPulse {
+    pub pin: CashDrawer,
+    #[serde(rename = "pulseMs")]
+    pub pulse_ms: u16,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct BitImage {
+    pub width: u32,
+    pub height: u32,
+    pub data: String,
+}
+
 impl From<CashDrawer> for EscCashDrawer {
     fn from(c: CashDrawer) -> Self {
         match c {
@@ -238,6 +254,7 @@ pub enum Command {
     PageCode(PageCode),
     CharacterSet(CharacterSet),
     Bold(bool),
+    Italic(bool),
     Underline(UnderlineMode),
     DoubleStrike(bool),
     Font(Font),
@@ -253,6 +270,7 @@ pub enum Command {
     ResetLineSpacing(Option<()>),
     UpsideDown(bool),
     CashDrawer(CashDrawer),
+    CashDrawerPulse(CashDrawerPulse),
     Write(String),
     Writeln(String),
     Ean13(String),
@@ -265,7 +283,45 @@ pub enum Command {
     Qrcode(String),
     GS1Databar2d(String),
     Pdf417(String),
+    #[serde(alias = "Maxicode")]
     MaxiCode(String),
     DataMatrix(String),
     Aztec(String),
+    BitImage(BitImage),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Command;
+    use serde_json::json;
+
+    #[test]
+    fn italic_command_round_trips_over_json() {
+        let enabled: Command = serde_json::from_value(json!({
+            "command": "Italic",
+            "parameters": true
+        }))
+        .expect("Italic should be accepted by the command schema");
+        assert!(matches!(enabled, Command::Italic(true)));
+
+        let disabled = serde_json::to_value(Command::Italic(false)).unwrap();
+        assert_eq!(
+            disabled,
+            json!({ "command": "Italic", "parameters": false })
+        );
+    }
+
+    #[test]
+    fn accepts_consumer_maxicode_alias_and_preserves_desktop_spelling() {
+        let command: Command = serde_json::from_value(json!({
+            "command": "Maxicode",
+            "parameters": "fixture"
+        }))
+        .unwrap();
+        assert!(matches!(command, Command::MaxiCode(ref data) if data == "fixture"));
+        assert_eq!(
+            serde_json::to_value(command).unwrap()["command"],
+            "MaxiCode"
+        );
+    }
 }

@@ -29,3 +29,10 @@ impl StatusResponse {
         }
     }
 }
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct HealthResponse {
+    pub status: &'static str,
+    pub version: &'static str,
+    pub uptime_seconds: u64,
+}

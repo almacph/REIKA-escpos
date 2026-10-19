@@ -1,5 +1,5 @@
-use chrono::Local;
 use crate::models::{Command, Font, JustifyMode, UnderlineMode};
+use chrono::Local;
 
 /// Tracks ESC/POS formatting state to safely inject markers mid-stream
 #[derive(Debug, Clone)]
@@ -38,6 +38,7 @@ impl FormattingState {
     pub fn apply(&mut self, command: &Command) {
         match command {
             Command::Bold(v) => self.bold = *v,
+            Command::Italic(_) => {}
             Command::Underline(v) => self.underline = v.clone(),
             Command::DoubleStrike(v) => self.double_strike = *v,
             Command::Reverse(v) => self.reverse = *v,
@@ -57,6 +58,7 @@ impl FormattingState {
     pub fn reset_commands() -> Vec<Command> {
         vec![
             Command::Bold(false),
+            Command::Italic(false),
             Command::Underline(UnderlineMode::None),
             Command::DoubleStrike(false),
             Command::Reverse(false),
@@ -125,6 +127,7 @@ fn is_content_command(command: &Command) -> bool {
             | Command::MaxiCode(_)
             | Command::DataMatrix(_)
             | Command::Aztec(_)
+            | Command::BitImage(_)
     )
 }
 
@@ -179,7 +182,12 @@ pub fn inject_reprint_markers(commands: Vec<Command>) -> Vec<Command> {
     // Strip any trailing PrintCut/Cut from original commands — we add our own at the end
     let mut original: Vec<Command> = commands
         .into_iter()
-        .filter(|c| !matches!(c, Command::PrintCut(_) | Command::Cut(_) | Command::PartialCut(_)))
+        .filter(|c| {
+            !matches!(
+                c,
+                Command::PrintCut(_) | Command::Cut(_) | Command::PartialCut(_)
+            )
+        })
         .collect();
 
     // Also strip leading Init — we add our own
@@ -243,6 +251,7 @@ mod tests {
         let mut state = FormattingState::default();
         state.apply(&Command::Bold(true));
         assert!(state.bold);
+        state.apply(&Command::Italic(true));
         state.apply(&Command::Size((2, 3)));
         assert_eq!(state.size, (2, 3));
         state.apply(&Command::Init(None));
@@ -278,6 +287,19 @@ mod tests {
     }
 
     #[test]
+    fn image_counts_as_visible_content_for_midpoint() {
+        let commands = vec![
+            Command::BitImage(crate::models::BitImage {
+                width: 8,
+                height: 1,
+                data: "AA==".to_string(),
+            }),
+            Command::Writeln("text".to_string()),
+        ];
+        assert_eq!(find_content_midpoint(&commands), 1);
+    }
+
+    #[test]
     fn test_inject_reprint_markers_structure() {
         let commands = vec![
             Command::Init(None),
@@ -291,9 +313,10 @@ mod tests {
         // Should end with PrintCut
         assert!(matches!(result.last(), Some(Command::PrintCut(None))));
         // Should contain "REPRINT COPY" markers (3 of them: top, mid, bottom)
-        let reprint_count = result.iter().filter(|c| {
-            matches!(c, Command::Writeln(text) if text.contains("REPRINT COPY"))
-        }).count();
+        let reprint_count = result
+            .iter()
+            .filter(|c| matches!(c, Command::Writeln(text) if text.contains("REPRINT COPY")))
+            .count();
         assert_eq!(reprint_count, 3);
     }
 }
