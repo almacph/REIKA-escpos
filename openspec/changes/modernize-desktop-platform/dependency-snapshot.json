@@ -1,0 +1,191 @@
+[
+  {
+    "name": "log",
+    "requirement": "0.4",
+    "locked": [
+      "0.4.29"
+    ],
+    "latest_stable": "0.4.34",
+    "rust_version": "1.71.0",
+    "released": "2026-08-22T11:44:27.941626Z",
+    "repository": "https://github.com/rust-lang/log"
+  },
+  {
+    "name": "env_logger",
+    "requirement": "0.11.3",
+    "locked": [
+      "0.11.3"
+    ],
+    "latest_stable": "0.11.11",
+    "rust_version": "1.71",
+    "released": "2026-06-25T12:42:02.332351Z",
+    "repository": "https://github.com/rust-cli/env_logger"
+  },
+  {
+    "name": "escpos",
+    "requirement": "0.17.0",
+    "locked": [
+      "0.17.0"
+    ],
+    "latest_stable": "0.20.1",
+    "rust_version": "1.88.0",
+    "released": "2026-10-07T16:29:32.241928Z",
+    "repository": "https://github.com/fabienbellanger/escpos-rs"
+  },
+  {
+    "name": "rusb",
+    "requirement": "0.9.4",
+    "locked": [
+      "0.9.4"
+    ],
+    "latest_stable": "0.9.4",
+    "rust_version": null,
+    "released": "2024-04-27T15:43:26.949530Z",
+    "repository": "https://github.com/a1ien/rusb.git"
+  },
+  {
+    "name": "serde",
+    "requirement": "1.0.203",
+    "locked": [
+      "1.0.228"
+    ],
+    "latest_stable": "1.0.229",
+    "rust_version": "1.56",
+    "released": "2026-07-18T23:05:13.266456Z",
+    "repository": "https://github.com/serde-rs/serde"
+  },
+  {
+    "name": "serde_json",
+    "requirement": "1.0.118",
+    "locked": [
+      "1.0.120"
+    ],
+    "latest_stable": "1.0.154",
+    "rust_version": "1.71",
+    "released": "2026-10-11T15:31:46.076577Z",
+    "repository": "https://github.com/serde-rs/json"
+  },
+  {
+    "name": "tokio",
+    "requirement": "1.38.0",
+    "locked": [
+      "1.38.0"
+    ],
+    "latest_stable": "1.53.3",
+    "rust_version": "1.71",
+    "released": "2026-10-13T20:51:46.498182Z",
+    "repository": "https://github.com/tokio-rs/tokio"
+  },
+  {
+    "name": "warp",
+    "requirement": "0.3.7",
+    "locked": [
+      "0.3.7"
+    ],
+    "latest_stable": "0.4.3",
+    "rust_version": null,
+    "released": "2026-05-04T19:33:48.290142Z",
+    "repository": "https://github.com/seanmonstar/warp"
+  },
+  {
+    "name": "eframe",
+    "requirement": "0.29",
+    "locked": [
+      "0.29.1"
+    ],
+    "latest_stable": "0.37.0",
+    "rust_version": "1.95",
+    "released": "2026-10-15T15:28:53.621684Z",
+    "repository": "https://github.com/emilk/egui/tree/main/crates/eframe"
+  },
+  {
+    "name": "egui",
+    "requirement": "0.29",
+    "locked": [
+      "0.29.1"
+    ],
+    "latest_stable": "0.37.0",
+    "rust_version": "1.95",
+    "released": "2026-10-15T14:49:16.159284Z",
+    "repository": "https://github.com/emilk/egui"
+  },
+  {
+    "name": "tray-icon",
+    "requirement": "0.19",
+    "locked": [
+      "0.19.3"
+    ],
+    "latest_stable": "0.26.1",
+    "rust_version": "1.90",
+    "released": "2026-10-07T15:59:36.326079Z",
+    "repository": "https://github.com/tauri-apps/tray-icon"
+  },
+  {
+    "name": "toml",
+    "requirement": "0.8",
+    "locked": [
+      "0.8.2"
+    ],
+    "latest_stable": "1.1.8+spec-1.1.0",
+    "rust_version": "1.85",
+    "released": "2026-10-09T02:46:31.816670Z",
+    "repository": "https://github.com/toml-rs/toml"
+  },
+  {
+    "name": "chrono",
+    "requirement": "0.4",
+    "locked": [
+      "0.4.43"
+    ],
+    "latest_stable": "0.4.45",
+    "rust_version": "1.62.0",
+    "released": "2026-06-04T12:16:42.063037Z",
+    "repository": "https://github.com/chronotope/chrono"
+  },
+  {
+    "name": "notify-rust",
+    "requirement": "4",
+    "locked": [
+      "4.11.7"
+    ],
+    "latest_stable": "4.18.2",
+    "rust_version": "1.89.0",
+    "released": "2026-10-07T17:06:00.363920Z",
+    "repository": "https://github.com/hoodie/notify-rust"
+  },
+  {
+    "name": "reqwest",
+    "requirement": "0.12",
+    "locked": [
+      "0.12.9"
+    ],
+    "latest_stable": "0.13.5",
+    "rust_version": "1.85.0",
+    "released": "2026-09-08T20:55:26.479356Z",
+    "repository": "https://github.com/seanmonstar/reqwest"
+  },
+  {
+    "name": "windows",
+    "requirement": "0.58",
+    "locked": [
+      "0.52.0",
+      "0.58.0",
+      "0.61.3"
+    ],
+    "latest_stable": "0.62.2",
+    "rust_version": "1.82",
+    "released": "2025-10-06T19:19:49.704461Z",
+    "repository": "https://github.com/microsoft/windows-rs"
+  },
+  {
+    "name": "winit",
+    "requirement": "0.30",
+    "locked": [
+      "0.30.12"
+    ],
+    "latest_stable": "0.30.13",
+    "rust_version": "1.70.0",
+    "released": "2026-03-02T13:50:47.664884Z",
+    "repository": "https://github.com/rust-windowing/winit"
+  }
+]

@@ -1,6 +1,11 @@
 # ESC/POS Commands Specification
 
-Complete specification of all 40 ESC/POS commands supported by the service.
+## Purpose
+
+Define the tagged JSON command contract and ESC/POS byte behavior shared by
+the REIKA consumer, normal desktop prints, and reprints.
+
+Complete specification of all 42 ESC/POS commands supported by the service.
 
 ## Requirements
 
@@ -14,7 +19,7 @@ The system SHALL deserialize commands using Serde's internally tagged enum forma
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(tag = "command", content = "parameters")]
 pub enum Command {
-    // 40 variants...
+    // 42 variants...
 }
 ```
 
@@ -59,12 +64,13 @@ The system SHALL support printer initialization, reset, and paper control comman
 
 ### Requirement: Text Formatting Commands
 
-The system SHALL support bold, underline, double-strike, and reverse text styles.
+The system SHALL support bold, italic, underline, double-strike, and reverse text styles.
 
 **Implementation:** `src/models/command.rs:25-45`
 
 ```rust
 Bold(bool),                    // ESC E n (0x1B 0x45 n)
+Italic(bool),                  // ESC 4/5 (0x1B 0x34/0x35)
 Underline(UnderlineMode),      // ESC - n (0x1B 0x2D n)
 DoubleStrike(bool),            // ESC G n (0x1B 0x47 n)
 Reverse(bool),                 // GS B n (0x1D 0x42 n)
@@ -264,6 +270,21 @@ pub enum CashDrawer {
 - **WHEN** `{"command": "CashDrawer", "parameters": "Pin5"}`
 - **THEN** sends pulse to RJ11 connector pin 5 (alternate wiring)
 
+### Requirement: Contract Extensions
+
+The system SHALL support explicit drawer pulse timing and bounded one-bit
+raster images. `CashDrawerPulse` SHALL encode `ESC p` with the selected pin
+and duration, while `BitImage` SHALL use normal `GS v 0` bands of at most 24
+rows. Legacy `Italic` remains parseable but has no printer or preview effect.
+
+#### Scenario: Explicit drawer pulse
+- **WHEN** `CashDrawerPulse` is given Pin2 and pulseMs 100
+- **THEN** the service emits `1B 70 00 32 FF`
+
+#### Scenario: Raster banding
+- **WHEN** a valid BitImage exceeds 24 rows
+- **THEN** the service emits ordered normal-mode bands and preserves row data
+
 ---
 
 ### Requirement: 1D Barcode Commands
@@ -322,15 +343,16 @@ Aztec(String),                // Aztec Code (transport tickets)
 | Category | Commands | Count |
 |----------|----------|-------|
 | **Control** | Print, Init, Reset, Cut, PartialCut, PrintCut | 6 |
-| **Boolean Formatting** | Bold, DoubleStrike, Flip, Reverse, Smoothing, Feed, UpsideDown | 7 |
+| **Boolean Formatting** | Bold, Italic, DoubleStrike, Flip, Reverse, Smoothing, Feed, UpsideDown | 8 |
 | **Numeric** | Feeds, LineSpacing | 2 |
 | **String Output** | Write, Writeln | 2 |
 | **Size** | Size, ResetSize | 2 |
 | **Enum Formatting** | Underline, Font, Justify, PageCode, CharacterSet, CashDrawer | 6 |
 | **1D Barcodes** | Ean13, Ean8, Upca, Upce, Code39, Codabar, Itf | 7 |
-| **2D Codes** | Qrcode, GS1Databar2d, Pdf417, MaxiCode, DataMatrix, Aztec | 6 |
+| **2D Codes** | Qrcode, GS1Databar2d, Pdf417, MaxiCode/Maxicode, DataMatrix, Aztec | 6 |
+| **Drawer/Raster** | CashDrawerPulse, BitImage | 2 |
 | **Misc** | ResetLineSpacing | 1 |
-| **Total** | | **40** |
+| **Total** | | **42** |
 
 ---
 

@@ -24,7 +24,7 @@ src/
 
   models/
     mod.rs             # Model re-exports
-    command.rs         # Command enum (35+ ESC/POS commands) + type conversions
+    command.rs         # Command enum (42 ESC/POS commands) + type conversions
     request.rs         # Request DTOs (Commands, PrinterTestSchema)
     response.rs        # StatusResponse with optional error field
 ```
@@ -42,14 +42,14 @@ src/
 ### Key Types
 
 - `PrinterService` - Thread-safe wrapper (`Arc<Mutex<UsbDriver>>`) with auto-reconnect
-- `Command` - Tagged enum for 35+ ESC/POS commands (`#[serde(tag = "command", content = "parameters")]`)
+- `Command` - Tagged enum for 42 ESC/POS commands (`#[serde(tag = "command", content = "parameters")]`)
 - `StatusResponse` - API response with `is_connected: bool` and `error: Option<String>`
 - `AppError` - `InvalidInput` (400), `PrinterError` (500), `Internal` (500)
 
 ## Requirements
 
 - Rust 1.85+
-- Windows: Zadig (for USB driver setup)
+- Windows 10/11 x64: signed REIKA Setup EXE (development ZIP remains available)
 
 ## Building
 
@@ -65,18 +65,28 @@ cargo build --release --target x86_64-pc-windows-gnu
 
 Output: `target/release/reika-escpos` or `target/x86_64-pc-windows-gnu/release/reika-escpos.exe`
 
-## Windows USB Driver Setup
+## Windows Setup and USB Driver
 
-The printer must use **WinUSB** driver (not the default Windows USB Print driver).
+Production installs use the signed `reika-setup.exe`, which requests elevation
+for the reviewed driver package and registers a per-user logon watchdog. The
+installer replaces the Windows USB Print binding for the selected interface;
+that printer will no longer be available through the standard spooler. Repair
+and uninstall remove the task and application files while leaving shared
+driver-store packages unless Windows confirms safe removal.
 
-1. Download [Zadig](https://zadig.akeo.ie/)
-2. Run as Administrator
-3. **Options → List All Devices**
-4. Select your printer (VID_0483 PID_5840)
-5. Select **WinUSB** as target driver
-6. Click **Replace Driver**
+The installer refuses to claim plug-and-play setup when the signed INF/CAT
+package, trusted signing provenance, or captured composite interface data is
+missing. The portable ZIP is suitable for development and recovery. In that
+case, use [Zadig](https://zadig.akeo.ie/) as a clearly labeled fallback:
+run it as Administrator, enable **Options → List All Devices**, select the
+reviewed printer interface, and choose WinUSB. This fallback is not the
+production installer path; restoring USBPRINT may be required for spooler use.
 
-> Note: This makes the printer unavailable to standard Windows printing. Use Device Manager to restore if needed.
+The watchdog checks the exact installed executable and bounded `GET /health`
+responses. Three consecutive liveness failures trigger a restart after a
+five-minute cooldown. USB unplug/readiness failures do not restart a healthy
+service. Driver repair can create a short-lived `maintenance.lease` in the original user state directory rather than beside the
+installed executable; the watchdog ignores checks for at most 15 minutes.
 
 ## Configuration
 
@@ -123,21 +133,26 @@ Send ESC/POS commands.
 }
 ```
 
+### POST /print/reprint
+Reprint commands with the existing anti-fraud markers. Reprints are not added to print history.
+
 ## Supported Commands
 
 | Command | Parameters | Description |
 |---------|------------|-------------|
 | Print, Init, Reset, Cut, PartialCut, PrintCut, ResetSize, ResetLineSpacing | none | Basic operations |
-| Bold, DoubleStrike, Flip, Reverse, Smoothing, Feed, UpsideDown | `bool` | Toggle features |
+| Bold, Italic, DoubleStrike, Flip, Reverse, Smoothing, Feed, UpsideDown | `bool` | Toggle features |
 | Feeds, LineSpacing | `number` | Numeric settings |
 | Write, Writeln | `string` | Text output |
 | Size | `[width, height]` | Text size (1-8) |
 | Justify | `LEFT`, `CENTER`, `RIGHT` | Alignment |
 | Underline | `None`, `Single`, `Double` | Underline mode |
 | Font | `A`, `B`, `C` | Font selection |
-| CashDrawer | `Pin2`, `Pin5` | Open drawer |
+| CashDrawer | `Pin2`, `Pin5` | Open drawer with legacy timing |
+| CashDrawerPulse | `{pin, pulseMs}` (`100`, `150`, `200`) | Open drawer with explicit pulse timing |
 | Ean13, Ean8, Upca, Upce, Code39, Codabar, Itf | `string` | Barcodes |
-| Qrcode, Pdf417, DataMatrix, Aztec, MaxiCode, GS1Databar2d | `string` | 2D codes |
+| Qrcode, Pdf417, DataMatrix, Aztec, MaxiCode/Maxicode, GS1Databar2d | `string` | 2D codes |
+| BitImage | `{width, height, data}` | 1-bit base64 raster; width 1–576, height 1–4096, max 294,912 decoded bytes |
 | PageCode, CharacterSet | enum values | Character encoding |
 
 ## Integration

@@ -1,5 +1,10 @@
 # USB Driver Specification
 
+## Purpose
+
+Define USB discovery, interface ownership, transfer, retry, and diagnostic
+behavior for ESC/POS printer communication.
+
 Custom USB driver implementation for ESC/POS thermal printer communication.
 
 ## Requirements

@@ -4,7 +4,7 @@
 REIKA-escpos is an ESC/POS thermal printer service for the REIKA POS system. It provides:
 - A local HTTP API server for sending print commands to USB thermal printers
 - A Windows GUI application with system tray integration for easy management
-- Support for 40 ESC/POS commands including text formatting, barcodes, and 2D codes
+  - Support for 42 ESC/POS commands including text formatting, barcodes, 2D codes, drawer pulses, and raster images
 - Automatic USB reconnection and error recovery with infinite retry
 
 ## Tech Stack
@@ -214,7 +214,7 @@ See `openspec/specs/` for detailed capability specifications:
 |------|-------------|
 | `usb-driver/spec.md` | USB communication with partial write detection |
 | `printer-service/spec.md` | Retry/reconnect logic, print ID tracing |
-| `escpos-commands/spec.md` | All 40 ESC/POS commands with byte mappings |
+| `escpos-commands/spec.md` | All 42 ESC/POS commands with byte mappings |
 | `http-api/spec.md` | REST endpoints, handlers, CORS |
 | `gui/spec.md` | System tray, window management, notifications |
 | `configuration/spec.md` | Printer presets, server config, logging |
@@ -227,7 +227,7 @@ See `openspec/specs/` for detailed capability specifications:
 | `src/services/printer.rs` | PrinterService with retry/reconnect logic |
 | `src/services/usb_driver.rs` | Custom USB driver with partial write detection |
 | `src/handlers/print.rs` | HTTP request handlers |
-| `src/models/command.rs` | 40 ESC/POS command definitions |
+| `src/models/command.rs` | 42 ESC/POS command definitions |
 | `src/app/gui.rs` | Main GUI application |
 | `src/app/tray.rs` | System tray with Windows message pump |
 | `src/app/config.rs` | Configuration loading and presets |
