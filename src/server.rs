@@ -46,7 +46,11 @@ pub async fn run_with_port(
 
 #[cfg(test)]
 mod tests {
-    use super::bind_http_listener;
+    use super::{bind_http_listener, run_with_port};
+    use crate::app::PrintLog;
+    use crate::services::{PrinterService, UsbConfig};
+    use std::sync::{Arc, Mutex};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     #[tokio::test]
     async fn bind_failure_is_returned_with_address() {
@@ -59,5 +63,52 @@ mod tests {
             .await
             .expect_err("occupied port must be reported");
         assert!(error.contains(&format!("127.0.0.1:{port}")));
+    }
+
+    #[tokio::test]
+    async fn http_server_bootstrap_serves_health_over_tcp() {
+        let reservation = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("test reservation should bind");
+        let port = reservation
+            .local_addr()
+            .expect("reservation address")
+            .port();
+        drop(reservation);
+
+        let service = PrinterService::unavailable(UsbConfig {
+            vendor_id: 0,
+            product_id: 0,
+            endpoint: None,
+            interface: None,
+        });
+        let print_log = Arc::new(Mutex::new(PrintLog::new(4)));
+        let (state_tx, mut state_rx) = tokio::sync::watch::channel("Starting".to_string());
+        let server = tokio::spawn(run_with_port(service, print_log, port, state_tx));
+
+        tokio::time::timeout(std::time::Duration::from_secs(1), state_rx.changed())
+            .await
+            .expect("HTTP startup state should be published")
+            .expect("state channel should remain open");
+        assert!(state_rx.borrow().starts_with("Listening"));
+
+        let mut client = tokio::net::TcpStream::connect(("127.0.0.1", port))
+            .await
+            .expect("HTTP listener should accept connections");
+        client
+            .write_all(b"GET /health HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+            .await
+            .expect("health request should be written");
+        let mut response = Vec::new();
+        client
+            .read_to_end(&mut response)
+            .await
+            .expect("health response should be readable");
+        let response = String::from_utf8_lossy(&response);
+        assert!(response.starts_with("HTTP/1.1 200"));
+        assert!(response.contains("\"status\":\"ok\""));
+
+        server.abort();
+        let _ = server.await;
     }
 }
