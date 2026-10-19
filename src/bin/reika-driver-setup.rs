@@ -178,11 +178,7 @@ fn interface_probe(instance: &str, guid_text: &str) -> bool {
         if required == 0 {
             continue;
         }
-        let mut buffer = vec![
-            0usize;
-            (required as usize + std::mem::size_of::<usize>() - 1)
-                / std::mem::size_of::<usize>()
-        ];
+        let mut buffer = vec![0usize; (required as usize).div_ceil(std::mem::size_of::<usize>())];
         let allocated_bytes = buffer.len() * std::mem::size_of::<usize>();
         let bytes = buffer.as_mut_ptr() as *mut u8;
         let detail = bytes as *mut SP_DEVICE_INTERFACE_DETAIL_DATA_W;
@@ -631,7 +627,7 @@ fn verify_catalog_signature(catalog: &Path, expected_thumbprint: &str) -> bool {
     if verified {
         let provider = unsafe { WTHelperProvDataFromStateData(data.hWVTStateData) };
         if !provider.is_null() {
-            let signer = unsafe { WTHelperGetProvSignerFromChain(provider, 0, false.into(), 0) };
+            let signer = unsafe { WTHelperGetProvSignerFromChain(provider, 0, false, 0) };
             if !signer.is_null() {
                 let cert = unsafe { WTHelperGetProvCertFromChain(signer, 0) };
                 if !cert.is_null() {
