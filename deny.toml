@@ -1,0 +1,24 @@
+# Release policy covers the sole shipped target. Linux GTK/zbus are used only
+# for development-host checks; review their unmaintained advisories separately
+# before adding a Linux release target. cargo-audit still scans the full lockfile.
+[graph]
+targets = ["x86_64-pc-windows-gnu"]
+
+[advisories]
+db-path = "~/.cargo/advisory-db"
+unmaintained = "transitive"
+
+[licenses]
+allow = ["Apache-2.0", "Apache-2.0 WITH LLVM-exception", "MIT", "BSD-2-Clause", "BSD-3-Clause", "ISC", "Unicode-3.0", "Unicode-DFS-2016", "Zlib", "MPL-2.0", "OFL-1.1", "Ubuntu-font-1.0", "CDLA-Permissive-2.0"]
+confidence-threshold = 0.8
+
+[licenses.private]
+ignore = true
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
