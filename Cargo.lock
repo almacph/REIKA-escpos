@@ -3339,7 +3339,7 @@ dependencies = [
 name = "reika-escpos"
 version = "2.0.0"
 dependencies = [
- "base64 0.22.1",
+ "base64 0.23.1",
  "chrono",
  "eframe",
  "egui",
