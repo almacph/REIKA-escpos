@@ -35,7 +35,7 @@ reqwest = { version = "0.13.5", features = ["json", "rustls"], default-features 
 
 # Windows-specific dependencies
 [target.'cfg(windows)'.dependencies]
-windows = { version = "0.61.3", features = [
+windows = { version = "0.62.2", features = [
     "Win32_Foundation",
     "Win32_Security",
     "Win32_Security_Cryptography",
