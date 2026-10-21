@@ -395,6 +395,7 @@ impl PrinterApp {
                 let preset_name = match self.config.printer.preset {
                     PrinterPreset::Standard => "Standard (XP-58IIH)",
                     PrinterPreset::IcsAdvent => "ICS Advent Adapter",
+                    PrinterPreset::XpQ90ec => "Xprinter XP-Q90EC",
                     PrinterPreset::Manual => "Manual Config",
                 };
                 ui.label(preset_name);
@@ -618,312 +619,331 @@ impl PrinterApp {
     }
 
     fn render_settings_window(&mut self, ctx: &egui::Context) {
+        let viewport = ctx.content_rect();
+        // Reserve room for the title, window frame, and Save/Cancel footer.
+        let form_height = (viewport.height() - 140.0).clamp(0.0, 560.0);
         egui::Window::new("Settings")
             .collapsible(false)
             .resizable(false)
             .min_width(350.0)
+            .constrain_to(viewport)
             .show(ctx, |ui| {
-                ui.heading("Printer Preset");
-                ui.add_space(8.0);
+                egui::ScrollArea::vertical()
+                    .id_salt("settings_form")
+                    .max_height(form_height)
+                    .show(ui, |ui| {
+                        ui.heading("Printer Preset");
+                        ui.add_space(8.0);
 
-                ui.horizontal(|ui| {
-                    ui.radio_value(
-                        &mut self.settings_preset,
-                        PrinterPreset::Standard,
-                        "Standard",
-                    );
-                    ui.label("(XP-58IIH, 0x0483:0x5840)");
-                });
-                ui.horizontal(|ui| {
-                    ui.radio_value(
-                        &mut self.settings_preset,
-                        PrinterPreset::IcsAdvent,
-                        "ICS Advent",
-                    );
-                    ui.label("(0x0FE6:0x811E, EP:1, IF:0)");
-                });
-                ui.horizontal(|ui| {
-                    ui.radio_value(&mut self.settings_preset, PrinterPreset::Manual, "Manual");
-                    ui.label("(custom settings)");
-                });
-
-                ui.add_space(12.0);
-
-                if self.settings_preset == PrinterPreset::Manual {
-                    ui.heading("Manual USB Settings");
-                    ui.add_space(8.0);
-
-                    egui::Grid::new("manual_settings_grid")
-                        .num_columns(2)
-                        .spacing([10.0, 8.0])
-                        .show(ui, |ui| {
-                            ui.label("Vendor ID:");
-                            ui.text_edit_singleline(&mut self.settings_vendor_id);
-                            ui.end_row();
-
-                            ui.label("Product ID:");
-                            ui.text_edit_singleline(&mut self.settings_product_id);
-                            ui.end_row();
-
-                            ui.label("Endpoint:");
-                            ui.text_edit_singleline(&mut self.settings_endpoint);
-                            ui.end_row();
-
-                            ui.label("Interface:");
-                            ui.text_edit_singleline(&mut self.settings_interface);
-                            ui.end_row();
+                        ui.horizontal(|ui| {
+                            ui.radio_value(
+                                &mut self.settings_preset,
+                                PrinterPreset::Standard,
+                                "Standard",
+                            );
+                            ui.label("(XP-58IIH, 0x0483:0x5840)");
+                        });
+                        ui.horizontal(|ui| {
+                            ui.radio_value(
+                                &mut self.settings_preset,
+                                PrinterPreset::IcsAdvent,
+                                "ICS Advent",
+                            );
+                            ui.label("(0x0FE6:0x811E, EP:1, IF:0)");
+                        });
+                        ui.horizontal(|ui| {
+                            ui.radio_value(
+                                &mut self.settings_preset,
+                                PrinterPreset::XpQ90ec,
+                                "XP-Q90EC",
+                            );
+                            ui.label("(0x0483:0x070B)");
+                        });
+                        ui.horizontal(|ui| {
+                            ui.radio_value(&mut self.settings_preset, PrinterPreset::Manual, "Manual");
+                            ui.label("(custom settings)");
                         });
 
-                    ui.add_space(4.0);
-                    ui.label(
-                        egui::RichText::new("Leave endpoint/interface empty for auto-detect")
+                        ui.add_space(12.0);
+
+                        if self.settings_preset == PrinterPreset::Manual {
+                            ui.heading("Manual USB Settings");
+                            ui.add_space(8.0);
+
+                            egui::Grid::new("manual_settings_grid")
+                                .num_columns(2)
+                                .spacing([10.0, 8.0])
+                                .show(ui, |ui| {
+                                    ui.label("Vendor ID:");
+                                    ui.text_edit_singleline(&mut self.settings_vendor_id);
+                                    ui.end_row();
+
+                                    ui.label("Product ID:");
+                                    ui.text_edit_singleline(&mut self.settings_product_id);
+                                    ui.end_row();
+
+                                    ui.label("Endpoint:");
+                                    ui.text_edit_singleline(&mut self.settings_endpoint);
+                                    ui.end_row();
+
+                                    ui.label("Interface:");
+                                    ui.text_edit_singleline(&mut self.settings_interface);
+                                    ui.end_row();
+                                });
+
+                            ui.add_space(4.0);
+                            ui.label(
+                                egui::RichText::new("Leave endpoint/interface empty for auto-detect")
+                                    .weak()
+                                    .small(),
+                            );
+                        }
+
+                        ui.add_space(12.0);
+                        ui.separator();
+                        ui.add_space(8.0);
+
+                        ui.heading("Server Settings");
+                        ui.add_space(8.0);
+
+                        egui::Grid::new("server_settings_grid")
+                            .num_columns(2)
+                            .spacing([10.0, 8.0])
+                            .show(ui, |ui| {
+                                ui.label("Server Port:");
+                                ui.text_edit_singleline(&mut self.settings_port);
+                                ui.end_row();
+                            });
+
+                        ui.add_space(12.0);
+                        ui.separator();
+                        ui.add_space(8.0);
+
+                        ui.heading("REIKA Integration");
+                        ui.add_space(8.0);
+
+                        egui::Grid::new("reika_settings_grid")
+                            .num_columns(2)
+                            .spacing([10.0, 8.0])
+                            .show(ui, |ui| {
+                                ui.label("API Key:");
+                                ui.text_edit_singleline(&mut self.settings_reika_api_key);
+                                ui.end_row();
+
+                                ui.label("Server URL:");
+                                ui.text_edit_singleline(&mut self.settings_reika_server_url);
+                                ui.end_row();
+                            });
+
+                        ui.label(
+                            egui::RichText::new("Sensor health reporting to REIKA dashboard")
+                                .weak()
+                                .small(),
+                        );
+
+                        ui.add_space(12.0);
+                        ui.separator();
+                        ui.add_space(8.0);
+
+                        ui.heading("Debug Logging");
+                        ui.add_space(8.0);
+
+                        ui.checkbox(
+                            &mut self.settings_logging_enabled,
+                            "Enable debug logging to file",
+                        );
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "State directory: {}",
+                                crate::app::storage::StateDirectory::resolve()
+                                    .root()
+                                    .display()
+                            ))
                             .weak()
                             .small(),
-                    );
-                }
-
-                ui.add_space(12.0);
-                ui.separator();
-                ui.add_space(8.0);
-
-                ui.heading("Server Settings");
-                ui.add_space(8.0);
-
-                egui::Grid::new("server_settings_grid")
-                    .num_columns(2)
-                    .spacing([10.0, 8.0])
-                    .show(ui, |ui| {
-                        ui.label("Server Port:");
-                        ui.text_edit_singleline(&mut self.settings_port);
-                        ui.end_row();
-                    });
-
-                ui.add_space(12.0);
-                ui.separator();
-                ui.add_space(8.0);
-
-                ui.heading("REIKA Integration");
-                ui.add_space(8.0);
-
-                egui::Grid::new("reika_settings_grid")
-                    .num_columns(2)
-                    .spacing([10.0, 8.0])
-                    .show(ui, |ui| {
-                        ui.label("API Key:");
-                        ui.text_edit_singleline(&mut self.settings_reika_api_key);
-                        ui.end_row();
-
-                        ui.label("Server URL:");
-                        ui.text_edit_singleline(&mut self.settings_reika_server_url);
-                        ui.end_row();
-                    });
-
-                ui.label(
-                    egui::RichText::new("Sensor health reporting to REIKA dashboard")
-                        .weak()
-                        .small(),
-                );
-
-                ui.add_space(12.0);
-                ui.separator();
-                ui.add_space(8.0);
-
-                ui.heading("Debug Logging");
-                ui.add_space(8.0);
-
-                ui.checkbox(
-                    &mut self.settings_logging_enabled,
-                    "Enable debug logging to file",
-                );
-                ui.label(
-                    egui::RichText::new(format!(
-                        "State directory: {}",
-                        crate::app::storage::StateDirectory::resolve()
-                            .root()
-                            .display()
-                    ))
-                    .weak()
-                    .small(),
-                );
-                if ui.button("Export diagnostics").clicked() {
-                    match crate::app::write_diagnostic_export() {
-                        Ok(path) => {
-                            notify_print_success(&format!("Diagnostics: {}", path.display()))
-                        }
-                        Err(error) => notify_print_error("Diagnostics", &error.to_string()),
-                    }
-                }
-
-                ui.add_space(12.0);
-                ui.separator();
-                ui.heading("Windows USB Setup / Repair");
-                ui.label(
-                    "Read-only inventory. Setup changes require an explicit elevated installer.",
-                );
-                if ui.button("Inspect driver bindings").clicked()
-                    && self.driver_diagnostics.is_none()
-                {
-                    let (tx, rx) = std_mpsc::channel();
-                    self.driver_diagnostics = Some(rx);
-                    std::thread::spawn(move || {
-                        let _ = tx.send(crate::app::driver_setup::inventory());
-                    });
-                }
-                if let Some(rx) = &self.driver_diagnostics {
-                    if let Ok(results) = rx.try_recv() {
-                        self.driver_results = results;
-                        self.driver_diagnostics = None;
-                    }
-                }
-                for result in &self.driver_results {
-                    ui.label(format!("{} — {}", result.state, result.detail));
-                    if !result.hardware_id.is_empty() {
-                        ui.small(format!(
-                            "{} / {} / {}",
-                            result.hardware_id, result.service, result.provider
-                        ));
-                    }
-                }
-                if !self.driver_results.is_empty() {
-                    ui.add_space(6.0);
-                    ui.label("Select the exact enumerated device before repair:");
-                    for (index, result) in self.driver_results.iter().enumerate() {
-                        let label = if result.instance_id.is_empty() {
-                            format!("{} ({})", result.state, result.hardware_id)
-                        } else {
-                            result.instance_id.clone()
-                        };
-                        if ui
-                            .selectable_label(self.driver_selected == Some(index), label)
-                            .clicked()
-                        {
-                            self.driver_selected = Some(index);
-                            self.driver_repair_status = None;
-                        }
-                    }
-                    let selected = self
-                        .driver_selected
-                        .and_then(|index| self.driver_results.get(index));
-                    let can_repair = selected.is_some_and(|device| {
-                        !device.instance_id.is_empty()
-                            && device.preset.is_some()
-                            && !matches!(
-                                device.state,
-                                crate::app::driver_setup::DriverState::Absent
-                                    | crate::app::driver_setup::DriverState::Unsupported
-                                    | crate::app::driver_setup::DriverState::Ambiguous
-                            )
-                    }) && self.driver_repair.is_none();
-                    if ui
-                        .add_enabled(can_repair, egui::Button::new("Repair selected device (administrator)"))
-                        .clicked()
-                    {
-                        if let Some(device) = selected.cloned() {
-                            let instance = device.instance_id;
-                            let key = match device.preset.unwrap_or_default() {
-                                "ICS Advent" => "ics-advent",
-                                _ => "standard",
+                        );
+                        if ui.button("Export diagnostics").clicked() {
+                            match crate::app::write_diagnostic_export() {
+                                Ok(path) => {
+                                    notify_print_success(&format!("Diagnostics: {}", path.display()))
+                                }
+                                Err(error) => notify_print_error("Diagnostics", &error.to_string()),
                             }
-                            .to_string();
-                            let service = self.service.clone();
+                        }
+
+                        ui.add_space(12.0);
+                        ui.separator();
+                        ui.heading("Windows USB Setup / Repair");
+                        ui.label("Install the WinUSB driver for the printer's USB interface.");
+                        ui.label("In Zadig, select WinUSB, NOT libusbK or libusb-win32 (libusb0).");
+                        ui.label(
+                            "Read-only inventory. Setup changes require an explicit elevated installer.",
+                        );
+                        if ui.button("Inspect driver bindings").clicked()
+                            && self.driver_diagnostics.is_none()
+                        {
                             let (tx, rx) = std_mpsc::channel();
-                            self.driver_repair = Some(rx);
-                            self.driver_repair_started = Some(std::time::Instant::now());
-                            self.driver_repair_status = Some(
-                                "Releasing the printer handle before requesting administrator approval…"
-                                    .into(),
-                            );
+                            self.driver_diagnostics = Some(rx);
                             std::thread::spawn(move || {
-                                let runtime = match tokio::runtime::Runtime::new() {
-                                    Ok(runtime) => runtime,
-                                    Err(error) => {
-                                        let _ = tx.send(
-                                            crate::app::driver_setup::RepairOutcome::Failed(
-                                                format!("could not start repair worker: {error}"),
-                                            ),
-                                        );
-                                        return;
-                                    }
-                                };
-                                let result = runtime.block_on(async move {
-                                    let state_dir = crate::app::storage::StateDirectory::resolve();
-                                    if !state_dir.is_available() {
-                                        return Err(crate::error::AppError::Internal(
-                                            state_dir.error().unwrap_or("user state directory unavailable").into(),
-                                        ));
-                                    }
-                                    // Pause watchdog recovery before asking the owner to release
-                                    // its handle, closing the small race between those operations.
-                                    let watchdog_lease = WatchdogLease::create(state_dir.root())
-                                        .map_err(crate::error::AppError::Internal)?;
-                                    let lease = match service.enter_maintenance().await {
-                                        Ok(lease) => lease,
-                                        Err(error) => {
-                                            drop(watchdog_lease);
-                                            return Err(error);
-                                        }
-                                    };
-                                    let helper = crate::app::driver_setup::launch_repair(instance, key);
-                                    let result = loop {
-                                        match helper.recv_timeout(std::time::Duration::from_secs(30)) {
-                                            Ok(outcome) => break outcome,
-                                            Err(std_mpsc::RecvTimeoutError::Timeout) => {
-                                                // Keep the watchdog lease fresh while the helper
-                                                // remains alive. This also keeps maintenance held
-                                                // if Windows denied PROCESS_TERMINATE.
-                                                watchdog_lease.refresh();
-                                            }
-                                            Err(std_mpsc::RecvTimeoutError::Disconnected) => {
-                                                break crate::app::driver_setup::RepairOutcome::Failed(
-                                                    "elevated helper worker crashed".into(),
-                                                )
-                                            }
-                                        }
-                                    };
-                                    drop(lease);
-                                    drop(watchdog_lease);
-                                    Ok::<_, crate::error::AppError>(result)
-                                });
-                                let outcome = match result {
-                                    Ok(outcome) => outcome,
-                                    Err(error) => crate::app::driver_setup::RepairOutcome::Failed(
-                                        error.to_string(),
-                                    ),
-                                };
-                                let _ = tx.send(outcome);
+                                let _ = tx.send(crate::app::driver_setup::inventory());
                             });
                         }
-                    }
-                    if let Some(rx) = &self.driver_repair {
-                        if let Ok(outcome) = rx.try_recv() {
-                            self.driver_repair_status = Some(outcome.to_string());
-                            self.driver_repair = None;
-                            self.driver_repair_started = None;
-                            self.driver_diagnostics = None;
+                        if let Some(rx) = &self.driver_diagnostics {
+                            if let Ok(results) = rx.try_recv() {
+                                self.driver_results = results;
+                                self.driver_diagnostics = None;
+                            }
                         }
-                    }
-                    if self.driver_repair.is_some()
-                        && self
-                            .driver_repair_started
-                            .is_some_and(|started| started.elapsed() >= std::time::Duration::from_secs(300))
-                    {
-                        self.driver_repair_status = Some(
-                            "Administrator helper did not exit after 300 seconds; maintenance remains active and manual recovery may be required."
-                                .into(),
+                        for result in &self.driver_results {
+                            ui.label(format!("{} — {}", result.state, result.detail));
+                            if !result.hardware_id.is_empty() {
+                                ui.small(format!(
+                                    "{} / {} / {}",
+                                    result.hardware_id, result.service, result.provider
+                                ));
+                            }
+                        }
+                        if !self.driver_results.is_empty() {
+                            ui.add_space(6.0);
+                            ui.label("Select the exact enumerated device before repair:");
+                            for (index, result) in self.driver_results.iter().enumerate() {
+                                let label = if result.instance_id.is_empty() {
+                                    format!("{} ({})", result.state, result.hardware_id)
+                                } else {
+                                    result.instance_id.clone()
+                                };
+                                if ui
+                                    .selectable_label(self.driver_selected == Some(index), label)
+                                    .clicked()
+                                {
+                                    self.driver_selected = Some(index);
+                                    self.driver_repair_status = None;
+                                }
+                            }
+                            let selected = self
+                                .driver_selected
+                                .and_then(|index| self.driver_results.get(index));
+                            let can_repair = selected.is_some_and(|device| {
+                                !device.instance_id.is_empty()
+                                    && device.preset.is_some()
+                                    && !matches!(
+                                        device.state,
+                                        crate::app::driver_setup::DriverState::Absent
+                                            | crate::app::driver_setup::DriverState::Unsupported
+                                            | crate::app::driver_setup::DriverState::Ambiguous
+                                    )
+                            }) && self.driver_repair.is_none();
+                            if ui
+                                .add_enabled(can_repair, egui::Button::new("Repair selected device (administrator)"))
+                                .clicked()
+                            {
+                                if let Some(device) = selected.cloned() {
+                                    let instance = device.instance_id;
+                                    let key = match device.preset.unwrap_or_default() {
+                                        "ICS Advent" => "ics-advent",
+                                        _ => "standard",
+                                    }
+                                    .to_string();
+                                    let service = self.service.clone();
+                                    let (tx, rx) = std_mpsc::channel();
+                                    self.driver_repair = Some(rx);
+                                    self.driver_repair_started = Some(std::time::Instant::now());
+                                    self.driver_repair_status = Some(
+                                        "Releasing the printer handle before requesting administrator approval…"
+                                            .into(),
+                                    );
+                                    std::thread::spawn(move || {
+                                        let runtime = match tokio::runtime::Runtime::new() {
+                                            Ok(runtime) => runtime,
+                                            Err(error) => {
+                                                let _ = tx.send(
+                                                    crate::app::driver_setup::RepairOutcome::Failed(
+                                                        format!("could not start repair worker: {error}"),
+                                                    ),
+                                                );
+                                                return;
+                                            }
+                                        };
+                                        let result = runtime.block_on(async move {
+                                            let state_dir = crate::app::storage::StateDirectory::resolve();
+                                            if !state_dir.is_available() {
+                                                return Err(crate::error::AppError::Internal(
+                                                    state_dir.error().unwrap_or("user state directory unavailable").into(),
+                                                ));
+                                            }
+                                            // Pause watchdog recovery before asking the owner to release
+                                            // its handle, closing the small race between those operations.
+                                            let watchdog_lease = WatchdogLease::create(state_dir.root())
+                                                .map_err(crate::error::AppError::Internal)?;
+                                            let lease = match service.enter_maintenance().await {
+                                                Ok(lease) => lease,
+                                                Err(error) => {
+                                                    drop(watchdog_lease);
+                                                    return Err(error);
+                                                }
+                                            };
+                                            let helper = crate::app::driver_setup::launch_repair(instance, key);
+                                            let result = loop {
+                                                match helper.recv_timeout(std::time::Duration::from_secs(30)) {
+                                                    Ok(outcome) => break outcome,
+                                                    Err(std_mpsc::RecvTimeoutError::Timeout) => {
+                                                        // Keep the watchdog lease fresh while the helper
+                                                        // remains alive. This also keeps maintenance held
+                                                        // if Windows denied PROCESS_TERMINATE.
+                                                        watchdog_lease.refresh();
+                                                    }
+                                                    Err(std_mpsc::RecvTimeoutError::Disconnected) => {
+                                                        break crate::app::driver_setup::RepairOutcome::Failed(
+                                                            "elevated helper worker crashed".into(),
+                                                        )
+                                                    }
+                                                }
+                                            };
+                                            drop(lease);
+                                            drop(watchdog_lease);
+                                            Ok::<_, crate::error::AppError>(result)
+                                        });
+                                        let outcome = match result {
+                                            Ok(outcome) => outcome,
+                                            Err(error) => crate::app::driver_setup::RepairOutcome::Failed(
+                                                error.to_string(),
+                                            ),
+                                        };
+                                        let _ = tx.send(outcome);
+                                    });
+                                }
+                            }
+                            if let Some(rx) = &self.driver_repair {
+                                if let Ok(outcome) = rx.try_recv() {
+                                    self.driver_repair_status = Some(outcome.to_string());
+                                    self.driver_repair = None;
+                                    self.driver_repair_started = None;
+                                    self.driver_diagnostics = None;
+                                }
+                            }
+                            if self.driver_repair.is_some()
+                                && self
+                                    .driver_repair_started
+                                    .is_some_and(|started| started.elapsed() >= std::time::Duration::from_secs(300))
+                            {
+                                self.driver_repair_status = Some(
+                                    "Administrator helper did not exit after 300 seconds; maintenance remains active and manual recovery may be required."
+                                        .into(),
+                                );
+                            }
+                            if let Some(status) = &self.driver_repair_status {
+                                ui.label(status);
+                            }
+                        }
+
+                        ui.add_space(16.0);
+                        ui.label(
+                            egui::RichText::new("Note: Changes require application restart")
+                                .weak()
+                                .italics(),
                         );
-                    }
-                    if let Some(status) = &self.driver_repair_status {
-                        ui.label(status);
-                    }
-                }
-
-                ui.add_space(16.0);
-                ui.label(
-                    egui::RichText::new("Note: Changes require application restart")
-                        .weak()
-                        .italics(),
-                );
-
+                    });
+                ui.separator();
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
                     if ui.button("Save").clicked() {

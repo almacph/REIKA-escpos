@@ -79,7 +79,8 @@ package, trusted signing provenance, or captured composite interface data is
 missing. The portable ZIP is suitable for development and recovery. In that
 case, use [Zadig](https://zadig.akeo.ie/) as a clearly labeled fallback:
 run it as Administrator, enable **Options → List All Devices**, select the
-reviewed printer interface, and choose WinUSB. This fallback is not the
+reviewed printer interface, and choose **WinUSB**, **NOT libusbK or
+libusb-win32 (libusb0)**. This fallback is not the
 production installer path; restoring USBPRINT may be required for spooler use.
 
 The watchdog checks the exact installed executable and bounded `GET /health`

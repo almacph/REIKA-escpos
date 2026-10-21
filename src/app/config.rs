@@ -22,6 +22,7 @@ pub enum PrinterPreset {
     #[default]
     Standard,
     IcsAdvent,
+    XpQ90ec,
     Manual,
 }
 
@@ -44,6 +45,7 @@ impl PrinterConfig {
         match self.preset {
             PrinterPreset::Standard => 0x0483,
             PrinterPreset::IcsAdvent => 0x0FE6,
+            PrinterPreset::XpQ90ec => 0x0483,
             PrinterPreset::Manual => self.vendor_id.unwrap_or(0x0483),
         }
     }
@@ -52,13 +54,14 @@ impl PrinterConfig {
         match self.preset {
             PrinterPreset::Standard => 0x5840,
             PrinterPreset::IcsAdvent => 0x811E,
+            PrinterPreset::XpQ90ec => 0x070B,
             PrinterPreset::Manual => self.product_id.unwrap_or(0x5840),
         }
     }
 
     pub fn resolved_endpoint(&self) -> Option<u8> {
         match self.preset {
-            PrinterPreset::Standard => None,
+            PrinterPreset::Standard | PrinterPreset::XpQ90ec => None,
             PrinterPreset::IcsAdvent => Some(1),
             PrinterPreset::Manual => self.endpoint,
         }
@@ -66,7 +69,7 @@ impl PrinterConfig {
 
     pub fn resolved_interface(&self) -> Option<u8> {
         match self.preset {
-            PrinterPreset::Standard => None,
+            PrinterPreset::Standard | PrinterPreset::XpQ90ec => None,
             PrinterPreset::IcsAdvent => Some(0),
             PrinterPreset::Manual => self.interface,
         }
