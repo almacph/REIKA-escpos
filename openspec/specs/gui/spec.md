@@ -579,6 +579,18 @@ When the API key is empty, the section SHALL display a note: "Leave empty to dis
 - **WHEN** the operator clears the API key field and saves settings
 - **THEN** the sensor reporter is disabled on next restart and no reports are sent
 
+### Requirement: Consumer-Compatible Receipt Preview
+
+The desktop receipt preview SHALL render legacy Italic commands as no-ops and display valid BitImage raster content in command order. Image display SHALL preserve aspect ratio and fit the available receipt width. Other supported text formatting and the existing receipt preview/reprint interaction SHALL remain unchanged.
+
+#### Scenario: Legacy saved receipt
+- **WHEN** a stored receipt contains Italic true and false around text
+- **THEN** the preview opens successfully and shows regular text while preserving other supported styles
+
+#### Scenario: Raster receipt
+- **WHEN** a receipt contains a valid raster image between two text lines
+- **THEN** the preview shows the image in that position without distortion
+
 ## Design Decisions
 
 ### Dedicated Tray Thread

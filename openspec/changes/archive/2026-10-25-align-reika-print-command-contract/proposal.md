@@ -10,7 +10,7 @@ REIKA currently produces command payloads that this service rejects (`CashDrawer
 - Add explicit pulse-duration drawer commands and bounded raster-image commands using REIKA's existing JSON shapes.
 - Accept REIKA's `Maxicode` spelling while retaining the existing `MaxiCode` spelling for saved desktop payloads.
 - Validate complete jobs before any USB output; reject invalid new command parameters with the existing JSON error shape rather than retrying deterministic invalid input indefinitely.
-- Include raster content in reprint midpoint calculation and desktop preview; preserve existing marker, retry, and print-history behavior.
+- Include raster content in reprint midpoint calculation and desktop preview; preserve existing marker and print-history behavior. Printer errors during a print attempt return without replay; transport recovery continues for later requests.
 - Establish fixture-based contract verification against the actual REIKA consumer and document the older schema package's incompatible field names.
 - Repair missing Purpose sections and stale command/reference documentation during implementation and archive, preserving all existing requirements.
 

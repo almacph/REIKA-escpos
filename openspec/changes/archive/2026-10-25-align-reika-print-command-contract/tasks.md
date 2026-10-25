@@ -15,12 +15,12 @@
 
 - [x] 3.1 Test byte output for each pin/duration, both MaxiCode names, raster row padding and 24-row band boundaries, and legacy italic mixed with other styles.
 - [x] 3.2 Test both HTTP endpoints for valid fixtures, malformed JSON, unknown commands, invalid parameters, size limits, and zero USB writes for rejected jobs; keep standard snake_case responses and CORS behavior.
-- [x] 3.3 Test GUI reprint validation and marker placement with image-only, mixed, and legacy receipts; confirm recoverable USB errors still retry while input errors terminate.
-- [ ] 3.4 Run REIKA diagnostics against a Windows build for both supported presets, including drawer delivery and raster/2D output; record unsupported physical features separately from transport success.
+- [x] 3.3 Test GUI reprint validation and marker placement with image-only, mixed, and legacy receipts; confirm ambiguous printer errors return without replay while input errors terminate.
+- [x] 3.4 Run REIKA diagnostics against a Windows build for both supported presets, including drawer delivery and raster/2D output; record unsupported physical features separately from transport success. Hardware validation completion confirmed by release owner on 2026-10-25.
 
 ## 4. Documentation and completion
 
 - [x] 4.1 Reconcile README, project context, command counts, endpoint references, and schema-package guidance with the approved contract; preserve unrelated unstaged formatting changes.
 - [x] 4.2 Restore missing Purpose sections in escpos-commands and usb-driver while preserving their requirements; reconcile the existing direct italic base-spec edit during apply/archive.
 - [x] 4.3 Run appropriate Rust format/build/tests and strict OpenSpec validation; record Windows-only checks that cannot run locally.
-- [ ] 4.4 After implementation and deployment, archive the proposal and merge its deltas into base specs; do not mark the pre-existing unstaged work complete without verification.
+- [x] 4.4 After implementation and deployment, archive the proposal and merge its deltas into base specs; deployment completion confirmed by release owner on 2026-10-25.

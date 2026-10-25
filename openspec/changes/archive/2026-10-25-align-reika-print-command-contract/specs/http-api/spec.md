@@ -2,7 +2,7 @@
 
 ### Requirement: Print Contract Preflight
 
-POST /print and POST /print/reprint SHALL validate complete command payloads before any printer side effect. Malformed JSON, unknown command tags, and invalid command parameters SHALL return HTTP 400 with the existing `is_connected: false` and string `error` response fields. Request bodies larger than 4 MiB SHALL return HTTP 413 with those same response fields. Recoverable printer failures SHALL retain existing retry behavior; deterministic input failures SHALL NOT be retried.
+POST /print and POST /print/reprint SHALL validate complete command payloads before any printer side effect. Malformed JSON, unknown command tags, and invalid command parameters SHALL return HTTP 400 with the existing `is_connected: false` and string `error` response fields. Request bodies larger than 4 MiB SHALL return HTTP 413 with those same response fields. Printer errors during a print attempt SHALL return to the requester without replaying the full command stream; transport recovery SHALL prepare the service for later requests.
 
 #### Scenario: Valid consumer extensions
 - **WHEN** a valid payload contains BitImage, CashDrawerPulse, Maxicode, or legacy boolean Italic
