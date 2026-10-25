@@ -8,19 +8,23 @@
 
 ### Requirement: Infinite Retry with Reconnection
 
-The system SHALL retry accepted print operations indefinitely for recoverable USB failures, with one USB owner serializing whole print attempts and reconnects. Deterministic input errors SHALL terminate without retry. The pending-job channel SHALL hold at most 32 requests and reject excess work before output. Health reads SHALL remain available during retry. Whole-job retry SHALL NOT be described as exactly-once delivery.
+The system SHALL execute each accepted print operation at most once after it begins writing, with one USB owner serializing whole print attempts and reconnects. Deterministic input errors and printer errors during a print attempt SHALL terminate that request and return an error to its requester. On a non-input printer error, the owner SHALL be released and background transport recovery SHALL continue for later requests. Discovery before a job begins may retry indefinitely. The pending-job channel SHALL hold at most 32 requests and reject excess work before output. Health reads SHALL remain available during recovery. A failed request may have emitted partial output; the service SHALL NOT claim exactly-once physical delivery.
 
 #### Scenario: Print succeeds on first attempt
 - **WHEN** the USB connection is stable and the printer accepts output
 - **THEN** the operation completes with attempts=1 in PRINT_SUMMARY
 
-#### Scenario: Print succeeds after USB reconnection
-- **WHEN** an attempt fails with a recoverable USB error
-- **THEN** the single owner reconnects and retries, reporting attempts greater than 1 on success
+#### Scenario: Ambiguous print failure returns without replay
+- **WHEN** a print attempt fails with a non-input printer error
+- **THEN** the owner releases the failed transport, returns the error to the requester, and does not replay the accepted command stream
 
-#### Scenario: Continuous retry on persistent failure
-- **WHEN** an accepted job waits for a disconnected printer
-- **THEN** recovery continues indefinitely with bounded backoff while status reads remain responsive
+#### Scenario: Background recovery after failed job
+- **WHEN** a print attempt fails and releases its owner
+- **THEN** the single owner continues discovery and can restore transport for later requests
+
+#### Scenario: Discovery while disconnected
+- **WHEN** no owner is available before a job begins
+- **THEN** discovery continues with bounded backoff while status reads remain responsive
 
 #### Scenario: Concurrent jobs and probes
 - **WHEN** multiple jobs and a health refresh are pending

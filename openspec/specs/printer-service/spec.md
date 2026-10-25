@@ -2,11 +2,11 @@
 
 ## Purpose
 
-Core service layer managing print operations with automatic retry and USB reconnection.
+Core service layer managing print operations with USB reconnection and background recovery.
 ## Requirements
-### Requirement: Infinite Retry with Reconnection
+### Requirement: Print Failure and Transport Recovery
 
-The system SHALL retry print operations indefinitely, reconnecting USB after each failure.
+The system SHALL return a printer error to the requester after a print attempt fails, and SHALL NOT replay the complete command stream for that accepted request after an ambiguous printer I/O failure. The worker SHALL release the failed USB owner and continue background transport recovery for later requests. Discovery and reconnection before a print attempt may continue retrying independently.
 
 **Implementation:** `src/services/printer.rs:114-157`
 
@@ -53,13 +53,13 @@ where
 - **WHEN** USB connection is stable and printer ready
 - **THEN** operation completes with `attempts=1` in `[PRINT_SUMMARY]` log
 
-#### Scenario: Print succeeds after USB reconnection
-- **WHEN** first attempt fails due to USB error
-- **THEN** service reconnects USB, retries, and eventually succeeds with `attempts > 1`
+#### Scenario: Ambiguous print failure is returned without replay
+- **WHEN** a print attempt returns a non-input printer error
+- **THEN** the service releases that owner, returns the error to the requester, and does not submit the command stream again for that request
 
-#### Scenario: Continuous retry on persistent failure
-- **WHEN** printer remains disconnected
-- **THEN** service retries indefinitely (never returns error to client until success)
+#### Scenario: Transport recovers for a later request
+- **WHEN** a print attempt fails and the owner is released
+- **THEN** background discovery may reopen the transport for a subsequent explicit request
 
 ---
 
@@ -270,7 +270,7 @@ async fn execute_commands_inner(
 
 #### Scenario: Command fails mid-execution
 - **WHEN** any command returns error
-- **THEN** execution stops immediately, error propagates to trigger retry/reconnect
+- **THEN** execution stops immediately and the error propagates to the requester without replaying the complete job
 
 #### Scenario: Per-command timing
 - **WHEN** each command executes

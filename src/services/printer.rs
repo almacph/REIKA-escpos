@@ -450,6 +450,12 @@ impl BlockingUsbWorker {
                                                 snapshot.transport = TransportState::Disconnected;
                                                 snapshot.reason = HealthReason::WriteFailed;
                                             }
+                                            // A printer error can be raised after the driver has
+                                            // already emitted part of the command stream. Reopening
+                                            // the device and replaying `command_vec` would duplicate
+                                            // the receipt. Leave recovery to the next explicit print
+                                            // request after the transport is rediscovered.
+                                            break Err(error);
                                         }
                                     }
                                 };
@@ -1771,5 +1777,96 @@ mod owner_tests {
             .unwrap();
         assert!(matches!(event, SensorEvent::PrintFail(_)));
         drop(result);
+    }
+
+    struct CountedFailingBackend {
+        prints: Arc<AtomicUsize>,
+        releases: Arc<AtomicUsize>,
+    }
+
+    impl OwnerBackend for CountedFailingBackend {
+        fn presence(&mut self) -> Result<Presence, HealthError> {
+            Ok(Presence::Present)
+        }
+
+        fn print(
+            &mut self,
+            _commands: Vec<Command>,
+            _reprint: bool,
+            _print_id: String,
+        ) -> Result<(), PrinterError> {
+            self.prints.fetch_add(1, Ordering::SeqCst);
+            Err(PrinterError::Io("ambiguous fake write failure".into()))
+        }
+
+        fn print_test(
+            &mut self,
+            _request: PrinterTestSchema,
+            _print_id: String,
+        ) -> Result<(), PrinterError> {
+            Ok(())
+        }
+
+        fn release(&mut self) -> Result<(), HealthError> {
+            self.releases.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn failed_http_job_is_returned_once_and_owner_is_released_for_recovery() {
+        let opens = Arc::new(AtomicUsize::new(0));
+        let prints = Arc::new(AtomicUsize::new(0));
+        let releases = Arc::new(AtomicUsize::new(0));
+        let factory_opens = opens.clone();
+        let factory_prints = prints.clone();
+        let factory_releases = releases.clone();
+        let factory: OwnerFactory = Arc::new(move || {
+            factory_opens.fetch_add(1, Ordering::SeqCst);
+            Ok(Box::new(CountedFailingBackend {
+                prints: factory_prints.clone(),
+                releases: factory_releases.clone(),
+            }) as Box<dyn OwnerBackend>)
+        });
+        let health = Arc::new(RwLock::new(HealthSnapshot::initial(&SystemClock)));
+        let publication = HealthPublication::new();
+        let worker = BlockingUsbWorker::start(factory, health.clone(), publication.clone());
+        let service = PrinterService {
+            worker: Arc::new(RwLock::new(Some(worker))),
+            health,
+            publication,
+            usb_config: UsbConfig {
+                vendor_id: 0,
+                product_id: 0,
+                endpoint: None,
+                interface: None,
+            },
+            status_tx: None,
+            sensor_tx: None,
+            transport: None,
+        };
+
+        let result = service
+            .execute_commands(Commands { commands: vec![] })
+            .await;
+        assert!(
+            matches!(result, Err(AppError::PrinterError(message)) if message.contains("ambiguous fake write failure"))
+        );
+        assert_eq!(prints.load(Ordering::SeqCst), 1);
+        assert_eq!(releases.load(Ordering::SeqCst), 1);
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while opens.load(Ordering::SeqCst) < 2 && Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(
+            opens.load(Ordering::SeqCst) >= 2,
+            "background discovery did not reopen owner"
+        );
+        assert_eq!(
+            prints.load(Ordering::SeqCst),
+            1,
+            "failed job must not be replayed during recovery"
+        );
     }
 }
