@@ -6,62 +6,31 @@ Core service layer managing print operations with USB reconnection and backgroun
 ## Requirements
 ### Requirement: Print Failure and Transport Recovery
 
-The system SHALL return a printer error to the requester after a print attempt fails, and SHALL NOT replay the complete command stream for that accepted request after an ambiguous printer I/O failure. The worker SHALL release the failed USB owner and continue background transport recovery for later requests. Discovery and reconnection before a print attempt may continue retrying independently.
-
-**Implementation:** `src/services/printer.rs:114-157`
-
-```rust
-async fn with_retry<F, Fut, T>(&self, f: F) -> Result<T, AppError>
-where
-    F: Fn(CustomUsbDriver, String) -> Fut,
-    Fut: Future<Output = Result<T, PrinterError>>,
-{
-    let start = Instant::now();
-    let mut attempt = 0u32;
-    let print_id = generate_print_id();
-
-    log::info!("[print_id={}] Starting print operation...", print_id);
-
-    loop {
-        attempt += 1;
-        let op_start = Instant::now();
-        log::info!("[print_id={}] Attempt #{} starting...", print_id, attempt);
-
-        let driver = self.driver.lock().await.clone();
-        match f(driver, print_id.clone()).await {
-            Ok(result) => {
-                log::info!(
-                    "[PRINT_SUMMARY] print_id={} | status=OK | attempts={} | duration={:?}",
-                    print_id, attempt, start.elapsed()
-                );
-                return Ok(result);
-            }
-            Err(e) => {
-                log::error!(
-                    "[print_id={}] Attempt #{} FAILED after {:?}: {:?}",
-                    print_id, attempt, op_start.elapsed(), e
-                );
-                log::info!("[print_id={}] Reconnecting before retry...", print_id);
-                self.reconnect().await;
-            }
-        }
-    }
-}
-```
+The system SHALL execute each accepted print operation at most once after it begins writing, with one USB owner serializing whole print attempts and reconnects. Deterministic input errors and printer errors during a print attempt SHALL terminate that request and return an error to its requester. On a non-input printer error, the owner SHALL be released and background transport recovery SHALL continue for later requests. Discovery before a job begins may retry indefinitely. The pending-job channel SHALL hold at most 32 requests and reject excess work before output. Health reads SHALL remain available during recovery. A failed request may have emitted partial output; the service SHALL NOT claim exactly-once physical delivery.
 
 #### Scenario: Print succeeds on first attempt
-- **WHEN** USB connection is stable and printer ready
-- **THEN** operation completes with `attempts=1` in `[PRINT_SUMMARY]` log
+- **WHEN** the USB connection is stable and the printer accepts output
+- **THEN** the operation completes with attempts=1 in PRINT_SUMMARY
 
-#### Scenario: Ambiguous print failure is returned without replay
-- **WHEN** a print attempt returns a non-input printer error
-- **THEN** the service releases that owner, returns the error to the requester, and does not submit the command stream again for that request
+#### Scenario: Ambiguous print failure returns without replay
+- **WHEN** a print attempt fails with a non-input printer error
+- **THEN** the owner releases the failed transport, returns the error to the requester, and does not replay the accepted command stream
 
-#### Scenario: Transport recovers for a later request
-- **WHEN** a print attempt fails and the owner is released
-- **THEN** background discovery may reopen the transport for a subsequent explicit request
+#### Scenario: Background recovery after failed job
+- **WHEN** a print attempt fails and releases its owner
+- **THEN** the single owner continues discovery and can restore transport for later requests
 
----
+#### Scenario: Discovery while disconnected
+- **WHEN** no owner is available before a job begins
+- **THEN** discovery continues with bounded backoff while status reads remain responsive
+
+#### Scenario: Concurrent jobs and probes
+- **WHEN** multiple jobs and a health refresh are pending
+- **THEN** job attempts do not interleave and probes run only between attempts
+
+#### Scenario: Queue capacity exceeded
+- **WHEN** the 32 pending-job slots are occupied
+- **THEN** a new submission is rejected before USB output and accepted jobs keep FIFO ordering
 
 ### Requirement: Print ID Generation
 
@@ -98,117 +67,55 @@ fn generate_print_id() -> String {
 
 ### Requirement: USB Reconnection
 
-The system SHALL replace the USB driver with a fresh connection on failure.
-
-**Implementation:** `src/services/printer.rs:104-113`
-
-```rust
-async fn reconnect(&self) {
-    let start = Instant::now();
-    self.update_status(false);
-    log::info!("reconnect: Starting USB reconnection...");
-    let new_driver = Self::initialize_device_with_config(&self.usb_config).await;
-    let mut driver = self.driver.lock().await;
-    *driver = new_driver;
-    self.update_status(true);
-    log::info!("reconnect: USB reconnected in {:?}", start.elapsed());
-}
-```
+The single USB owner SHALL invalidate a failed connection generation and release all old device handles before opening a replacement. It SHALL recover failed idle connections as well as active-job failures and SHALL reject observations from obsolete generations. Driver/access errors SHALL expose setup guidance rather than trigger concurrent reopen loops.
 
 #### Scenario: Reconnection broadcasts offline status
 - **WHEN** reconnection starts
-- **THEN** `status_tx.send(false)` notifies GUI of offline state
+- **THEN** consumers receive reconnecting/unavailable status and the compatibility boolean is false
 
 #### Scenario: Reconnection replaces driver
-- **WHEN** new USB connection established
-- **THEN** old driver is dropped and new driver replaces it in `Arc<Mutex>`
+- **WHEN** a replacement is opened
+- **THEN** the previous handle has already been released and the new connection has a distinct generation
 
 #### Scenario: Reconnection broadcasts online status
-- **WHEN** reconnection completes
-- **THEN** `status_tx.send(true)` notifies GUI of online state
+- **WHEN** a new connection is successfully opened and reconciled
+- **THEN** transport availability is broadcast without claiming unverified physical readiness
 
----
+#### Scenario: Idle recovery
+- **WHEN** the printer is unplugged and later reattached without a print request
+- **THEN** the worker detects the change and restores the transport without restarting the app
 
 ### Requirement: Initialize Device with Infinite Retry
 
-The system SHALL attempt USB device initialization indefinitely with 5-second backoff.
-
-**Implementation:** `src/services/printer.rs:58-82`
-
-```rust
-pub async fn initialize_device_with_config(config: &UsbConfig) -> CustomUsbDriver {
-    let mut attempt = 0u32;
-    loop {
-        attempt += 1;
-        log::info!(
-            "USB init attempt #{}: VID=0x{:04X}, PID=0x{:04X}",
-            attempt, config.vendor_id, config.product_id
-        );
-        match CustomUsbDriver::open(config) {
-            Ok(driver) => {
-                log::info!("USB device opened successfully on attempt #{}", attempt);
-                return driver;
-            }
-            Err(e) => {
-                log::warn!(
-                    "USB init attempt #{} failed: {:?}. Retrying in 5 seconds...",
-                    attempt, e
-                );
-                sleep(Duration::from_secs(5)).await;
-            }
-        }
-    }
-}
-```
+The system SHALL attempt initialization until a supported selected device becomes available or the application shuts down. Retry delays SHALL follow 1, 2, 5, 10, then 30 seconds with at most 10 percent positive jitter. Valid arrival events MAY wake discovery earlier. Driver/access failures SHALL use the slow retry cadence and show repair guidance. Successful connection SHALL reset backoff.
 
 #### Scenario: Device found immediately
-- **WHEN** USB printer is connected and ready
-- **THEN** returns driver on attempt #1
+- **WHEN** the selected USB printer is available
+- **THEN** the first initialization attempt opens it
 
 #### Scenario: Device found after waiting
-- **WHEN** USB printer is connected after service starts
-- **THEN** service waits (5s intervals) until device appears, then returns driver
+- **WHEN** the printer is attached after startup
+- **THEN** the owner discovers it through bounded-backoff retries or a supported arrival event
 
 #### Scenario: Logs each attempt
-- **WHEN** attempting to open device
-- **THEN** logs VID, PID, attempt number, and result for each attempt
+- **WHEN** initialization is attempted
+- **THEN** diagnostic logs identify VID, PID, attempt number, error category, and result
 
----
+#### Scenario: Shutdown during retry
+- **WHEN** the application exits during discovery
+- **THEN** no further retries are scheduled and owned resources are released
 
 ### Requirement: Non-Blocking Device Probe
 
-The system SHALL provide a non-blocking `try_open` for initial connection attempts.
-
-**Implementation:** `src/services/printer.rs:84-102`
-
-```rust
-pub fn try_open(config: &UsbConfig) -> Option<CustomUsbDriver> {
-    log::debug!(
-        "try_open: VID=0x{:04X}, PID=0x{:04X}, EP={:?}, IF={:?}",
-        config.vendor_id, config.product_id, config.endpoint, config.interface
-    );
-    match CustomUsbDriver::open(config) {
-        Ok(driver) => {
-            log::info!("try_open: USB device opened successfully");
-            Some(driver)
-        }
-        Err(e) => {
-            log::debug!("try_open: USB open failed: {:?}", e);
-            None
-        }
-    }
-}
-```
+Initial discovery and native USB operations SHALL execute on a dedicated blocking worker, not the HTTP or GUI execution threads. A probe SHALL report a finite attempt result to the owner rather than contain its own indefinite retry loop. Recovery scheduling SHALL remain the owner's responsibility.
 
 #### Scenario: Device available
-- **WHEN** USB device is connected
-- **THEN** returns `Some(driver)` immediately
+- **WHEN** the worker probes a supported available device
+- **THEN** it reports an opened connection without blocking HTTP or GUI status reads
 
 #### Scenario: Device unavailable
-- **WHEN** USB device is not connected
-- **THEN** returns `None` without blocking (no retry)
-
----
+- **WHEN** no selected device is available
+- **THEN** the attempt reports absence and the owner schedules later discovery
 
 ### Requirement: Command Execution Pipeline
 
@@ -280,79 +187,15 @@ async fn execute_commands_inner(
 
 ### Requirement: Status Broadcasting
 
-The system SHALL broadcast printer online/offline status via watch channel.
-
-**Implementation:** `src/services/printer.rs:46-55`
-
-```rust
-pub struct PrinterService {
-    driver: Arc<Mutex<CustomUsbDriver>>,
-    usb_config: UsbConfig,
-    status_tx: Option<watch::Sender<bool>>,
-}
-
-fn update_status(&self, online: bool) {
-    if let Some(tx) = &self.status_tx {
-        let _ = tx.send(online);
-    }
-}
-
-pub fn with_status(mut self, status_tx: watch::Sender<bool>) -> Self {
-    self.status_tx = Some(status_tx);
-    self
-}
-```
+The service SHALL publish a structured health snapshot through a watch channel, with transport availability, readiness, busy state, reason, capability, generation, and observation timestamps. Existing boolean consumers SHALL receive a derived compatibility state. No status channel SHALL remain a supported configuration with publication treated as a no-op.
 
 #### Scenario: Status channel connected
-- **WHEN** service created with `with_status(tx)`
-- **THEN** all status changes broadcast to GUI via watch channel
+- **WHEN** health changes and a channel is configured
+- **THEN** GUI and sensor consumers receive the same authoritative snapshot
 
 #### Scenario: Status channel not connected
-- **WHEN** service created without status channel
-- **THEN** `update_status` is no-op (optional functionality)
-
----
-
-### Requirement: Health Check via Init Command
-
-The system SHALL verify printer connectivity by sending an init command.
-
-**Implementation:** `src/services/printer.rs:159-194`
-
-```rust
-pub async fn check_connection(&self) -> bool {
-    log::debug!("check_connection: Health check starting...");
-    let driver = self.driver.lock().await.clone();
-    match Self::try_init(driver).await {
-        Ok(()) => {
-            self.update_status(true);
-            log::debug!("check_connection: Health check result = true");
-            true
-        }
-        Err(e) => {
-            log::debug!("check_connection: Health check failed: {:?}", e);
-            self.update_status(false);
-            false
-        }
-    }
-}
-
-async fn try_init(driver: CustomUsbDriver) -> Result<(), PrinterError> {
-    let start = Instant::now();
-    let mut printer = Printer::new(driver, Protocol::default(), None);
-    printer.init()
-}
-```
-
-#### Scenario: Health check succeeds
-- **WHEN** printer responds to init command
-- **THEN** returns `true` and broadcasts online status
-
-#### Scenario: Health check fails
-- **WHEN** printer does not respond (USB error)
-- **THEN** returns `false` and broadcasts offline status
-
----
+- **WHEN** no status channel is configured
+- **THEN** health publication is a no-op without affecting printing
 
 ### Requirement: Test Print Execution
 
@@ -431,12 +274,12 @@ Reprint operations SHALL NOT be logged to the print log.
 The system SHALL report its health state to the REIKA sensor monitoring endpoint (`POST /api/sensors/report`) when a valid API key and server URL are configured.
 
 The system SHALL report the following state values:
-- `ONLINE` when the printer is connected and the last health check passed
-- `OFFLINE` when the printer is disconnected or USB device is not found
+- `ONLINE` when transport evidence is fresh and available with no known blocking physical fault; unsupported physical readiness alone does not mean offline
+- `OFFLINE` when transport is unavailable or stale, or a verified physical fault blocks printing
 - `USB_ERROR` when a USB partial/zero write, stale handle, mutex lock failure, or interface claim failure occurs
 - `PRINT_FAIL` when a print command execution fails
 
-The system SHALL send heartbeat reports at a 60-second interval with the current state value. The REIKA server deduplicates heartbeats (same value only updates `last_seen_at`).
+The reporter SHALL initialize from the current health snapshot and send heartbeat reports at a 60-second interval with the current mapped state value, without resetting the timer on status events. The REIKA server deduplicates heartbeats (same value only updates `last_seen_at`).
 
 The system SHALL report state changes immediately upon occurrence, without waiting for the next heartbeat cycle.
 
@@ -446,7 +289,7 @@ The system SHALL use HTTPS with certificate verification disabled (matching the 
 
 If the REIKA server is unreachable, the system SHALL log a warning and retry on the next heartbeat cycle. Sensor reporting failures SHALL NOT block or affect printing operations.
 
-The sensor reporter SHALL run as a background Tokio task, subscribing to the existing `watch::channel<bool>` for online/offline status and receiving critical error events via `tokio::sync::mpsc` from the printer service and USB driver.
+The sensor reporter SHALL run as a background Tokio task, subscribing to the authoritative structured health snapshot and its compatibility mapping and receiving critical error events via `tokio::sync::mpsc` from the printer service and USB driver.
 
 #### Scenario: Heartbeat reporting while online
 - **WHEN** the printer is connected and 60 seconds have elapsed since the last report
@@ -471,6 +314,48 @@ The sensor reporter SHALL run as a background Tokio task, subscribing to the exi
 #### Scenario: No API key configured
 - **WHEN** the `reika.api_key` configuration is empty or not set
 - **THEN** the sensor reporter does not start and no reports are sent
+
+The reporter SHALL retain the existing four wire values; unsupported readiness alone SHALL NOT produce USB_ERROR. Fresh recovery observations SHALL replace prior transient error state.
+
+#### Scenario: Heartbeat amid repeated observations
+- **WHEN** status observations occur more frequently than 60 seconds
+- **THEN** heartbeat scheduling is not reset or starved
+
+#### Scenario: Error followed by recovery
+- **WHEN** USB_ERROR or PRINT_FAIL is followed by a fresh available transport observation with no known blocking fault
+- **THEN** the reporter publishes ONLINE rather than retaining the old error indefinitely
+
+### Requirement: Non-Destructive Bounded Printer Health
+
+Health checks SHALL NOT initialize, reset, feed, cut, pulse a drawer, or print. Idle presence checks SHALL run every 5 seconds. Verified readiness profiles SHALL use idle-only request/response transactions bounded to 250 ms each and 1 second per cycle, scheduled every 15 seconds. Unverified or output-only profiles SHALL report readiness unknown without sending speculative status commands. Three consecutive optional status failures SHALL disable detailed probing for the connection until reconnect or explicit retest, without alone declaring USB absent.
+
+#### Scenario: Status request while printing
+- **WHEN** a receipt is executing
+- **THEN** status readers use the snapshot and no probe bytes enter the receipt stream
+
+#### Scenario: Unsupported status protocol
+- **WHEN** a device has no verified status capability
+- **THEN** transport can be available while physical readiness is unknown
+
+#### Scenario: Paper or cover fault
+- **WHEN** a verified response reports paper-out or cover-open
+- **THEN** the fault is exposed without restarting the process or rebinding the driver
+
+### Requirement: Health Freshness and Failure Classification
+
+The service SHALL treat transport observations older than 15 seconds as stale and physical readiness observations older than 30 seconds as unknown. Successful print writes SHALL refresh transport evidence. Two consecutive soft transport-probe failures SHALL mark transport unavailable; definite removal, NoDevice, or failed/partial print writes SHALL invalidate the connection immediately. Old-generation responses SHALL NOT overwrite current state.
+
+#### Scenario: Slow unsupported status response
+- **WHEN** an optional status query times out while transport remains available
+- **THEN** readiness becomes unknown without an immediate disconnected transition
+
+#### Scenario: Hard disconnect
+- **WHEN** the device is removed or a write reports NoDevice
+- **THEN** its generation becomes unavailable immediately and one recovery sequence starts
+
+#### Scenario: Stale response after recovery
+- **WHEN** a result belongs to an older generation
+- **THEN** it is discarded without changing the current snapshot
 
 ## Design Decisions
 

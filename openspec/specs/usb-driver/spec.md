@@ -6,9 +6,7 @@ Define USB discovery, interface ownership, transfer, retry, and diagnostic
 behavior for ESC/POS printer communication.
 
 Custom USB driver implementation for ESC/POS thermal printer communication.
-
 ## Requirements
-
 ### Requirement: USB Device Discovery
 
 The system SHALL enumerate USB devices and locate the thermal printer by Vendor ID and Product ID.
@@ -39,47 +37,23 @@ for device in devices.iter() {
 
 ### Requirement: Endpoint Auto-Discovery
 
-The system SHALL automatically discover bulk IN and OUT endpoints when manual configuration is not provided.
-
-**Implementation:** `src/services/usb_driver.rs:97-135`
-
-```rust
-fn discover_endpoints(config_descriptor: &ConfigDescriptor) -> Result<(u8, u8, u8)> {
-    config_descriptor
-        .interfaces()
-        .flat_map(|interface| interface.descriptors())
-        .flat_map(|descriptor| {
-            let interface_number = descriptor.interface_number();
-            let mut input_endpoint = None;
-            let mut output_endpoint = None;
-
-            for endpoint in descriptor.endpoint_descriptors() {
-                if endpoint.transfer_type() == TransferType::Bulk {
-                    match endpoint.direction() {
-                        Direction::In => input_endpoint = Some(endpoint.address()),
-                        Direction::Out => output_endpoint = Some(endpoint.address()),
-                    }
-                }
-            }
-            match (output_endpoint, input_endpoint) {
-                (Some(out), Some(inp)) => Some((out, inp, interface_number)),
-                _ => None,
-            }
-        })
-        .next()
-        .ok_or_else(|| PrinterError::Io("no suitable endpoints found".to_string()))
-}
-```
+The driver SHALL select a valid bulk OUT endpoint from one supported interface and alternate setting. Bulk IN SHALL be optional and discovered independently from actual descriptors. Manual interface/OUT selections SHALL be validated against those descriptors; the driver SHALL NOT derive IN by setting the high bit of OUT. Non-default alternate settings SHALL be activated before I/O. Ambiguous device/interface candidates SHALL require explicit selection or a validated profile rather than silent first-match switching.
 
 #### Scenario: Auto-discovery finds bulk endpoints
-- **WHEN** USB device has bulk IN and OUT endpoints
-- **THEN** the driver uses discovered endpoint addresses (e.g., OUT=0x01, IN=0x81)
+- **WHEN** the selected interface exposes bulk OUT and bulk IN
+- **THEN** the actual descriptor addresses are used even if they have different endpoint numbers
 
 #### Scenario: Manual endpoint override
-- **WHEN** `config.endpoint` and `config.interface` are provided
-- **THEN** the driver uses `out_ep = config.endpoint` and `in_ep = config.endpoint | 0x80`
+- **WHEN** endpoint and interface are configured
+- **THEN** the OUT endpoint is validated and optional IN is discovered independently
 
----
+#### Scenario: Output-only printer
+- **WHEN** the interface has valid bulk OUT but no bulk IN
+- **THEN** printing remains supported and physical readiness is unknown
+
+#### Scenario: Invalid manual endpoint
+- **WHEN** the configured endpoint is missing or has the wrong direction/type
+- **THEN** the driver reports configuration failure instead of attempting I/O on an invented endpoint
 
 ### Requirement: Interface Claiming with Retry
 
@@ -279,6 +253,18 @@ fn write(&self, data: &[u8]) -> Result<()> {
 - **THEN** logs include: `[PRINT_FAILURE]` tag, endpoint, elapsed time, error details, rusb error kind
 
 ---
+
+### Requirement: Typed USB Failure and Connection Ownership
+
+The driver SHALL preserve native error categories for recovery decisions and expose all handles only through the single USB owner. Invalid handles SHALL be released before reopen. Native calls SHALL have finite timeouts; a caller-side timeout SHALL NOT spawn overlapping native operations. The existing print transfer timeout SHALL remain 5 seconds; health transactions SHALL use their shorter explicit budget.
+
+#### Scenario: Busy or access failure
+- **WHEN** claim/open reports Busy or Access
+- **THEN** diagnostics preserves that category and provides access/driver guidance
+
+#### Scenario: Partial transfer
+- **WHEN** a write completes partially or with zero bytes
+- **THEN** it remains a failed transfer with uncertain delivery and is never reported as success
 
 ## Design Decisions
 

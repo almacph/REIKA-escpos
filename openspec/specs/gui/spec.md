@@ -116,45 +116,23 @@ impl eframe::App for PrinterApp {
 
 ### Requirement: Printer Status Panel
 
-The system SHALL display current printer configuration and connection details.
-
-**Implementation:** `src/app/gui.rs:160-200`
-
-```rust
-fn render_status_panel(&self, ui: &mut egui::Ui) {
-    ui.heading("Printer Status");
-
-    // Preset name
-    let preset_name = match self.config.printer.preset {
-        PrinterPreset::Standard => "Standard",
-        PrinterPreset::IcsAdvent => "ICS Advent",
-        PrinterPreset::Manual => "Manual",
-    };
-    ui.label(format!("Preset: {}", preset_name));
-
-    // USB identifiers
-    ui.label(format!(
-        "USB: 0x{:04X}:0x{:04X}",
-        self.config.printer.resolved_vendor_id(),
-        self.config.printer.resolved_product_id()
-    ));
-
-    // Endpoint info (if manual)
-    if let Some(ep) = self.config.printer.resolved_endpoint() {
-        ui.label(format!("Endpoint: 0x{:02X}", ep));
-    }
-}
-```
+The GUI SHALL display current preset, VID/PID, configured endpoint details, USB transport state, physical readiness or unknown capability, busy/recovery state, and observation age. It SHALL distinguish setup/access errors from unplugged hardware and verified paper/cover faults, and SHALL NOT label unknown physical readiness as verified ready. Notifications SHALL occur only for meaningful state transitions.
 
 #### Scenario: Standard preset display
-- **WHEN** using Standard preset
-- **THEN** shows "Preset: Standard" and "USB: 0x0483:0x5840"
+- **WHEN** the Standard preset is selected
+- **THEN** the panel shows Standard and USB 0x0483:0x5840 with current health details
 
 #### Scenario: Manual preset display
-- **WHEN** using Manual preset with custom endpoint
-- **THEN** shows "Preset: Manual", custom VID:PID, and endpoint
+- **WHEN** Manual uses a custom endpoint
+- **THEN** the panel shows Manual, custom VID/PID, and endpoint
 
----
+#### Scenario: Transport available but readiness unsupported
+- **WHEN** the printer cannot provide verified status
+- **THEN** the panel shows USB available and readiness unknown
+
+#### Scenario: Known physical fault
+- **WHEN** a verified profile reports paper-out or cover-open
+- **THEN** the panel identifies that fault instead of suggesting only a USB cable check
 
 ### Requirement: Print Log Panel
 

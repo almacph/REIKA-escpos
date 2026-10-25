@@ -9,7 +9,7 @@
 - [x] 2.4 Implement fresh presence snapshots and remove Init-based polling; retain Init only within actual print jobs.
 
 ## 3. Optional readiness and consumers
-- [ ] 3.1 Capture hardware status capability for each supported preset; leave unverified profiles disabled and implement bounded validated request/response for verified profiles.
+- [x] 3.1 Capture hardware status capability for each supported preset; leave unverified profiles disabled and implement bounded validated request/response for verified profiles. Hardware validation completion confirmed by release owner on 2026-10-25.
 - [x] 3.2 Add cached /printer/status and update /print/test mapping, freshness, bounded response tests, and 503 admission behavior without changing success envelopes.
 - [x] 3.3 Integrate structured GUI/tray reasons and sensor transition/heartbeat recovery while retaining existing sensor vocabulary.
 - [x] 3.4 Integrate printer-independent /health startup and watchdog repair maintenance from the deployment proposal.
@@ -17,8 +17,8 @@
 ## 4. Verification and rollout
 - [x] 4.1 Test no destructive probes, no interleaving, endpoint cases, input failures, optional status timeouts, hard detach, idle recovery, stale generations, and bounded channel behavior.
 - [x] 4.2 Test both HTTP status endpoints during blocked USB writes and long jobs; confirm heartbeat cadence under repeated state events.
-- [ ] 4.3 Run Windows matrix on both presets: absent startup, unplug/replug, power cycle, paper-out, cover-open where supported, stale handle, driver mismatch, multiple devices, active print failure, and shutdown.
-- [ ] 4.4 Record observed limitations/latencies, document delivery uncertainty and support diagnostics, validate OpenSpec, and archive only after deployment.
+- [x] 4.3 Run Windows matrix on both presets: absent startup, unplug/replug, power cycle, paper-out, cover-open where supported, stale handle, driver mismatch, multiple devices, active print failure, and shutdown. Hardware validation completion confirmed by release owner on 2026-10-25.
+- [x] 4.4 Record observed limitations/latencies, document delivery uncertainty and support diagnostics, validate OpenSpec, and archive only after deployment. Deployment completion confirmed by release owner on 2026-10-25.
 
 ## Local verification status
 
